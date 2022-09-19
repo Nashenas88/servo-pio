@@ -1,0 +1,30 @@
+.program pwm
+
+.wrap_target
+    pull
+    out pins, 32
+    pull
+    out y, 32
+count_check:
+    jmp y-- delay
+.wrap
+
+
+delay:
+    jmp count_check [3]
+
+.program pwm_debug
+.side_set 1 opt
+
+.wrap_target
+    pull side 0
+    out pins, 32 side 1
+    pull side 0
+    out y, 32
+count_check:
+    jmp y-- delay side 0
+
+.wrap
+
+delay:
+    jmp count_check [3] side 1
