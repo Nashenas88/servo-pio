@@ -15,10 +15,15 @@ fugit = "0.3.6"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 panic-halt = "0.2.0"
 nb = "1.0.0"
-pio = "0.2.0"
-pio-proc = "0.2.1"
-
+# pio = "0.2.0"
+pio = { version="*" }#{ git = "https://github.com/rp-rs/pio-rs", rev = "67c82e867f22e039ac690f1b4ac4a4bbb4212537" }
+# pio-proc = "0.2.1"
+pio-proc = { git = "https://github.com/rp-rs/pio-rs", rev = "67c82e867f22e039ac690f1b4ac4a4bbb4212537" }
 pimoroni-servo2040 = { path = "../../rp-hal/boards/pimoroni-servo2040" }
+
+[lib]
+name = "servo_pio"
+path = "src/lib.rs"
 
 # cargo build/run
 [profile.dev]

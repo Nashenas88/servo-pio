@@ -4,21 +4,34 @@
 #![no_std]
 #![no_main]
 
+use embedded_hal::timer::CountDown;
+use fugit::ExtU64;
 use panic_halt as _;
-use pimoroni_servo2040::hal::dma::{DMAExt, CH0};
+use pimoroni_servo2040::hal::dma::{DMAExt, CH0, CH1};
 use pimoroni_servo2040::hal::pio::{PIOExt, SM0};
-use pimoroni_servo2040::hal::{self, pac};
-use pimoroni_servo2040::pac::PIO0;
-use pwm_cluster::{GlobalState, PwmCluster};
+use pimoroni_servo2040::hal::{self, pac, Clock};
+use pimoroni_servo2040::pac::{interrupt, PIO0};
+use servo_pio::calibration::{AngularCalibration, Calibration};
+use servo_pio::pwm_cluster::{dma_interrupt, GlobalState, GlobalStates, Handler};
+use servo_pio::servo_cluster::ServoCluster;
 
-mod pwm_cluster;
-mod servo_cluster;
-
-/// Static to prevent pins used in PIO from being used elsewhere.
-
-/// Number of servos to control on board.
-const NUM_SERVOS: u8 = 2;
-static mut GLOBALS: Option<GlobalState<CH0, PIO0, SM0>> = None;
+const NUM_SERVOS: usize = 2;
+const NUM_CHANNELS: usize = 12;
+static mut STATE1: Option<GlobalState<CH0, PIO0, SM0>> = {
+    const NONE_HACK: Option<GlobalState<CH0, PIO0, SM0>> = None;
+    NONE_HACK
+};
+#[allow(dead_code)]
+static mut STATE2: Option<GlobalState<CH1, PIO0, SM0>> = {
+    const NONE_HACK: Option<GlobalState<CH1, PIO0, SM0>> = None;
+    NONE_HACK
+};
+static mut GLOBALS: GlobalStates<NUM_CHANNELS> = {
+    const NONE_HACK: Option<&'static mut dyn Handler> = None;
+    GlobalStates {
+        states: [NONE_HACK; NUM_CHANNELS],
+    }
+};
 
 #[pimoroni_servo2040::entry]
 fn main() -> ! {
@@ -27,7 +40,7 @@ fn main() -> ! {
 
     let sio = hal::Sio::new(pac.SIO);
 
-    let _clocks = hal::clocks::init_clocks_and_plls(
+    let clocks = hal::clocks::init_clocks_and_plls(
         pimoroni_servo2040::XOSC_CRYSTAL_FREQ,
         pac.XOSC,
         pac.CLOCKS,
@@ -38,6 +51,7 @@ fn main() -> ! {
     )
     .ok()
     .unwrap();
+    clocks.system_clock.freq();
 
     let pins = pimoroni_servo2040::Pins::new(
         pac.IO_BANK0,
@@ -48,16 +62,31 @@ fn main() -> ! {
 
     let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
     let dma = pac.DMA.split(&mut pac.RESETS);
-    let _pwm_cluster = PwmCluster::new(
-        &mut pio,
-        sm0,
-        dma.ch0,
-        [pins.servo1.into(), pins.servo2.into()],
-        pins.scl.into(),
-        // Safety: No interrupts are able to run yet, so only this function is modifying GLOBALS.
-        unsafe { &mut GLOBALS },
-    )
-    .unwrap_or_else(|_| loop {});
+    let servo_pins: [_; NUM_SERVOS] = [pins.servo1.into(), pins.servo2.into()];
+    let side_set_pin = pins.scl.into();
+
+    let mut servo_cluster = {
+        let result = ServoCluster::<NUM_SERVOS, _, _, AngularCalibration>::builder(
+            &mut pio,
+            sm0,
+            dma.ch0,
+            unsafe { &mut GLOBALS },
+        )
+        .pins(servo_pins)
+        .side_set_pin(side_set_pin)
+        .pwm_frequency(50.0)
+        .calibration(Calibration::<AngularCalibration>::new())
+        .build(clocks.system_clock.freq(), unsafe { &mut STATE1 });
+        match result {
+            Ok(servo_cluster) => servo_cluster,
+            // TODO handle error
+            Err(_) =>
+            {
+                #[allow(clippy::empty_loop)]
+                loop {}
+            }
+        }
+    };
 
     // Unmask the DMA interrupt so the handler can start running.
     unsafe {
@@ -113,8 +142,42 @@ fn main() -> ! {
     //     let _ = nb::block!(count_down.wait());
     // }
 
-    #[allow(clippy::empty_loop)]
-    loop {}
+    // Configure the Timer peripheral in count-down mode
+    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
+    let mut count_down = timer.count_down();
+
+    const MIN_PULSE: f32 = 1000.0;
+    const MID_PULSE: f32 = 1500.0;
+    const MAX_PULSE: f32 = 2000.0;
+    let movement_delay = 400.millis();
+
+    loop {
+        // move to 0°
+        servo_cluster.set_pulse(0, MID_PULSE, true);
+        count_down.start(movement_delay);
+        let _ = nb::block!(count_down.wait());
+
+        // 0° to 90°
+        servo_cluster.set_pulse(0, MAX_PULSE, true);
+        count_down.start(movement_delay);
+        let _ = nb::block!(count_down.wait());
+
+        // 90° to 0°
+        servo_cluster.set_pulse(0, MID_PULSE, true);
+        count_down.start(movement_delay);
+        let _ = nb::block!(count_down.wait());
+
+        // 0° to -90°
+        servo_cluster.set_pulse(0, MIN_PULSE, true);
+        count_down.start(movement_delay);
+        let _ = nb::block!(count_down.wait());
+    }
 }
 
-// End of file
+#[interrupt]
+fn DMA_IRQ_0() {
+    critical_section::with(|_| {
+        // Safety: we're within a critical section, so nothing else will modify global_state.
+        dma_interrupt(unsafe { &mut GLOBALS });
+    });
+}
