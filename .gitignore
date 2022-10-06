@@ -6,8 +6,8 @@ target/
 
 # editor files
 .vscode/*
+.vscode/*.svd
 !.vscode/*.md
-!.vscode/*.svd
 !.vscode/launch.json
 !.vscode/tasks.json
 !.vscode/extensions.json

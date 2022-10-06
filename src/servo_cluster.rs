@@ -1,11 +1,16 @@
 use crate::calibration::{Calibration, CalibrationData, NoCustom, Point};
 use crate::pwm_cluster::{GlobalState, GlobalStates, PwmCluster, PwmClusterBuilder};
 use crate::servo_state::{self, ServoState, DEFAULT_FREQUENCY};
-use core::mem::MaybeUninit;
+use crate::{alloc_array, alloc_array_by_index};
+use defmt::Format;
 use fugit::HertzU32;
+use pimoroni_servo2040::hal::clocks::SystemClock;
 use pimoroni_servo2040::hal::dma::{Channel, ChannelIndex};
-use pimoroni_servo2040::hal::gpio::DynPin;
+use pimoroni_servo2040::hal::gpio::{
+    DynPin, Error as GpioError, Function, FunctionConfig, PinMode,
+};
 use pimoroni_servo2040::hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO};
+use pimoroni_servo2040::hal::Clock;
 
 pub struct ServoCluster<const NUM_SERVOS: usize, P, SM, Cal = NoCustom>
 where
@@ -34,7 +39,7 @@ pub struct ServoClusterBuilder<
 {
     pio: &'a mut PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
-    dma: Channel<C>,
+    dma_channel: Channel<C>,
     global_states: &'static mut GlobalStates<NUM_CHANNELS>,
     pins: Option<[DynPin; NUM_SERVOS]>,
     side_set_pin: Option<DynPin>,
@@ -49,7 +54,8 @@ where
     Cal: CalibrationData + Default + Clone,
     <Cal as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
     C: ChannelIndex,
-    P: PIOExt,
+    P: PIOExt + FunctionConfig,
+    Function<P>: PinMode,
     SM: StateMachineIndex,
 {
     pub fn calibration(mut self, calibration: Calibration<Cal>) -> Self {
@@ -62,61 +68,69 @@ where
         self
     }
 
-    pub fn pin_mask(mut self, pin_mask: u32) -> Self {
-        // Safety: MaybeUninit<[T; N]> is always initialized.
-        let mut pins: [MaybeUninit<u8>; NUM_SERVOS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        for (pin, bit) in pins.iter_mut().zip(0..32) {
-            pin.write(if pin_mask & (1 << bit) == 1 << bit {
-                bit
-            } else {
-                0
-            });
+    // pub fn pin_mask(mut self, pin_mask: u32) -> Self {
+    //     if true {
+    //         // self.pins is [DynPin;]
+    //         todo!()
+    //     }
+    //     // Safety: MaybeUninit<[T; N]> is always initialized.
+    //     let mut pins: [MaybeUninit<u8>; NUM_SERVOS] =
+    //         unsafe { MaybeUninit::uninit().assume_init() };
+    //     for (pin, bit) in pins.iter_mut().zip(0..32) {
+    //         pin.write(if pin_mask & (1 << bit) == 1 << bit {
+    //             bit
+    //         } else {
+    //             0
+    //         });
+    //     }
+
+    //     // Safety: all entries initialized above.
+    //     self.pins = Some(unsafe {
+    //         (*(&MaybeUninit::new(pins) as *const _ as *const MaybeUninit<_>)).assume_init_read()
+    //     });
+
+    //     self
+    // }
+
+    // pub fn pin_base(mut self, pin_base: u8) -> Self {
+    //     if true {
+    //         // self.pins is [DynPin;]
+    //         todo!()
+    //     }
+    //     // Safety: MaybeUninit<[T; N]> is always initialized.
+    //     let mut pins: [MaybeUninit<u8>; NUM_SERVOS] =
+    //         unsafe { MaybeUninit::uninit().assume_init() };
+    //     for (pin, id) in pins.iter_mut().zip(pin_base..(pin_base + NUM_SERVOS as u8)) {
+    //         pin.write(id);
+    //     }
+
+    //     // Safety: all entries initialized above.
+    //     self.pins = Some(unsafe {
+    //         (*(&MaybeUninit::new(pins) as *const _ as *const MaybeUninit<_>)).assume_init_read()
+    //     });
+
+    //     self
+    // }
+
+    pub fn pins(mut self, dyn_pins: [DynPin; NUM_SERVOS]) -> Result<Self, GpioError> {
+        for pin in &dyn_pins {
+            if pin.mode() != <Function<P> as PinMode>::DYN {
+                return Err(GpioError::InvalidPinMode);
+            }
         }
 
-        // Safety: all entries initialized above.
-        self.pins = unsafe {
-            (*(&MaybeUninit::new(pins) as *const _ as *const MaybeUninit<_>)).assume_init_read()
-        };
+        self.pins = Some(dyn_pins);
 
-        self
+        Ok(self)
     }
 
-    pub fn pin_base(mut self, pin_base: u8) -> Self {
-        // Safety: MaybeUninit<[T; N]> is always initialized.
-        let mut pins: [MaybeUninit<u8>; NUM_SERVOS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        for (pin, id) in pins.iter_mut().zip(pin_base..(pin_base + NUM_SERVOS as u8)) {
-            pin.write(id);
+    pub fn side_set_pin(mut self, side_set_pin: DynPin) -> Result<Self, GpioError> {
+        if side_set_pin.mode() == <Function<P> as PinMode>::DYN {
+            self.side_set_pin = Some(side_set_pin);
+            Ok(self)
+        } else {
+            Err(GpioError::InvalidPinMode)
         }
-
-        // Safety: all entries initialized above.
-        self.pins = unsafe {
-            (*(&MaybeUninit::new(pins) as *const _ as *const MaybeUninit<_>)).assume_init_read()
-        };
-
-        self
-    }
-
-    pub fn pins(mut self, dyn_pins: [DynPin; NUM_SERVOS]) -> Self {
-        // Safety: MaybeUninit<[T; N]> is always initialized.
-        let mut pins: [MaybeUninit<u8>; NUM_SERVOS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        for (pin, dyn_pin) in pins.iter_mut().zip(dyn_pins.into_iter()) {
-            pin.write(dyn_pin.id().num);
-        }
-
-        // Safety: all entries initialized above.
-        self.pins = unsafe {
-            (*(&MaybeUninit::new(pins) as *const _ as *const MaybeUninit<_>)).assume_init_read()
-        };
-
-        self
-    }
-
-    pub fn side_set_pin(mut self, side_set_pin: DynPin) -> Self {
-        self.side_set_pin = Some(side_set_pin);
-        self
     }
 
     pub fn pwm_frequency(mut self, pwm_frequency: f32) -> Self {
@@ -126,7 +140,7 @@ where
 
     pub fn build(
         mut self,
-        system_clock_hz: HertzU32,
+        system_clock: &SystemClock,
         maybe_global_state: &'static mut Option<GlobalState<C, P, SM>>,
     ) -> Result<ServoCluster<NUM_SERVOS, P, SM, Cal>, ServoClusterBuilderError> {
         let pins = self.pins.ok_or(ServoClusterBuilderError::MissingPins)?;
@@ -137,12 +151,10 @@ where
             self.calibration,
             self.auto_phase.unwrap_or(true),
         );
-        let global_state: *mut GlobalState<C, P, SM> =
-            self.global_states.get_mut(&mut self.dma, move || {
-                PwmClusterBuilder::<NUM_SERVOS>::prep_global_state(maybe_global_state)
-            });
+        let global_state = self.global_states.get_mut(&mut self.dma_channel, move || {
+            PwmClusterBuilder::<NUM_SERVOS>::prep_global_state(maybe_global_state)
+        });
         let mut pwms = {
-            let global_state = unsafe { &mut *global_state };
             {
                 PwmCluster::<NUM_SERVOS, P, SM>::builder()
                     .pins(&pins)
@@ -152,20 +164,22 @@ where
                         side_set_pin,
                         self.pio,
                         self.sm,
-                        self.dma,
-                        global_state,
+                        self.dma_channel,
+                        system_clock,
+                        global_state.ok_or(ServoClusterBuilderError::MismatchingGlobalState)?,
                     )
             }
         };
 
-        // Calculate a suitable pwm wrap period for this frequency
+        // Calculate a suitable pwm top period for this frequency
         let pwm_frequency = self.pwm_frequency.unwrap_or(DEFAULT_FREQUENCY);
         let pwm_period = if let Some((pwm_period, div256)) =
-            PwmCluster::<NUM_SERVOS, P, SM>::calculate_pwm_factors(system_clock_hz, pwm_frequency)
-        {
-            // Update the pwm before setting the new wrap
+            PwmCluster::<NUM_SERVOS, P, SM>::calculate_pwm_factors(
+                system_clock.freq(),
+                pwm_frequency,
+            ) {
+            // Update the pwm before setting the new top
             for servo in 0..NUM_SERVOS as u8 {
-                // unwrap ok since iterating over known number of servos.
                 let _ = pwms.set_channel_level(servo, 0, false);
                 let _ = pwms.set_channel_offset(
                     servo,
@@ -174,7 +188,7 @@ where
                 );
             }
 
-            // Set the new wrap (should be 1 less than the period to get full 0 to 100%)
+            // Set the new top (should be 1 less than the period to get full 0 to 100%)
             pwms.set_top(pwm_period, true); // NOTE Minus 1 not needed here. Maybe should change Wrap behaviour so it is needed, for consistency with hardware pwm?
 
             // Apply the new divider
@@ -197,7 +211,9 @@ where
     }
 }
 
+#[derive(Format)]
 pub enum ServoClusterBuilderError {
+    MismatchingGlobalState,
     MissingPins,
     MissingSideSet,
 }
@@ -212,7 +228,7 @@ where
     pub fn builder<C, const NUM_CHANNELS: usize>(
         pio: &'a mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
-        dma: Channel<C>,
+        dma_channel: Channel<C>,
         global_states: &'static mut GlobalStates<NUM_CHANNELS>,
     ) -> ServoClusterBuilder<'a, Ca, C, P, SM, NUM_SERVOS, NUM_CHANNELS>
     where
@@ -222,7 +238,7 @@ where
         ServoClusterBuilder {
             pio,
             sm,
-            dma,
+            dma_channel,
             global_states,
             pins: None,
             side_set_pin: None,
@@ -236,50 +252,20 @@ where
         calibration: Option<Calibration<Ca>>,
         auto_phase: bool,
     ) -> ([ServoState<Ca>; NUM_SERVOS], [f32; NUM_SERVOS]) {
-        // Safety: MaybeUnit<[T; N]> is already initialized.
-        let mut servo_states: [MaybeUninit<ServoState<Ca>>; NUM_SERVOS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        // Safety: MaybeUnit<[T; N]> is already initialized.
-        let mut servo_phases: [MaybeUninit<f32>; NUM_SERVOS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-
-        let c;
-        let ct;
-        let constructor = match calibration {
-            None => {
-                ct = move || ServoState::new();
-                &ct as &dyn Fn() -> ServoState<Ca>
-            }
-            Some(calibration) => {
-                c = move || ServoState::with_calibration(calibration.clone());
-                &c as &dyn Fn() -> ServoState<Ca>
-            }
-        };
-
-        for (i, (state, phase)) in servo_states
-            .iter_mut()
-            .zip(servo_phases.iter_mut())
-            .enumerate()
-        {
-            state.write(constructor());
-            phase.write(if auto_phase {
-                i as f32 / NUM_SERVOS as f32
-            } else {
-                0.0
-            });
-        }
-
         (
-            // Safety: All entries initialized above.
-            unsafe {
-                (*(&MaybeUninit::new(servo_states) as *const _ as *const MaybeUninit<_>))
-                    .assume_init_read()
+            match calibration {
+                Some(calibration) => alloc_array::<ServoState<Ca>, NUM_SERVOS>(move || {
+                    ServoState::with_calibration(calibration.clone())
+                }),
+                None => alloc_array::<ServoState<Ca>, NUM_SERVOS>(|| ServoState::new()),
             },
-            // Safety: All entries initialized above.
-            unsafe {
-                (*(&MaybeUninit::new(servo_phases) as *const _ as *const MaybeUninit<_>))
-                    .assume_init_read()
-            },
+            alloc_array_by_index::<f32, NUM_SERVOS>(|i| {
+                if auto_phase {
+                    i as f32 / NUM_SERVOS as f32
+                } else {
+                    0.0
+                }
+            }),
         )
     }
 
@@ -407,10 +393,8 @@ where
 
     fn apply_pulse(&mut self, servo: u8, pulse: f32, load: bool) {
         // unwrap ok because servo checked at call sites.
-        let _ = self.pwms.set_channel_level(
-            servo,
-            ServoState::<Ca>::pulse_to_level(pulse, self.pwm_period, self.pwm_frequency),
-            load,
-        );
+        let level = ServoState::<Ca>::pulse_to_level(pulse, self.pwm_period, self.pwm_frequency);
+        defmt::trace!("Pulse to level is {}", level);
+        let _ = self.pwms.set_channel_level(servo, level, load);
     }
 }

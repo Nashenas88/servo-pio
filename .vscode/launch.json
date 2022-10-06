@@ -24,12 +24,12 @@
             "coreConfigs": [
                 {
                     "coreIndex": 0,
-                    "programBinary": "target/thumbv6m-none-eabi/debug/rp2040-project-template",
+                    "programBinary": "target/thumbv6m-none-eabi/debug/mecha-ferris",
                     "chip": "RP2040",
                     // Uncomment this if you've downloaded the SVD from
                     // https://github.com/raspberrypi/pico-sdk/raw/1.3.1/src/rp2040/hardware_regs/rp2040.svd
                     // and placed it in the .vscode directory
-                    // "svdFile": "./.vscode/rp2040.svd",
+                    "svdFile": "./.vscode/rp2040.svd",
                     "rttEnabled": true,
                     "options": {
                         "env": {
@@ -38,7 +38,7 @@
                     },
                 }
             ],
-            "consoleLogLevel": "Info", //Error, Warn, Info, Debug, Trace
+            "consoleLogLevel": "Trace", //Error, Warn, Info, Debug, Trace
             "wireProtocol": "Swd"
         }
     ]

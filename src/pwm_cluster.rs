@@ -1,24 +1,33 @@
-use core::any::Any;
+use arrayvec::ArrayVec;
+use core::any::{Any, TypeId};
 use core::cell::RefCell;
-use core::mem::MaybeUninit;
 use cortex_m::singleton;
 use critical_section::Mutex;
+use defmt::Format;
 use fugit::HertzU32;
-use pimoroni_servo2040::hal;
+use pimoroni_servo2040::hal::clocks::SystemClock;
 use pimoroni_servo2040::hal::dma::{
     Channel, ChannelIndex, ReadTarget, SingleBuffering, SingleBufferingConfig, SingleChannel,
 };
 use pimoroni_servo2040::hal::gpio::DynPin;
 use pimoroni_servo2040::hal::pio::{
-    PIOExt, PinDir, Running, StateMachine, StateMachineIndex, Stopped, Tx, UninitStateMachine,
-    ValidStateMachine, PIO,
+    Buffers, PIOExt, PinDir, PinState, Running, ShiftDirection, StateMachine, StateMachineIndex,
+    Stopped, Tx, UninitStateMachine, ValidStateMachine, PIO,
 };
+use pimoroni_servo2040::hal::{self, Clock};
 use pio_proc::pio_file;
+
+use crate::alloc_array;
 
 type PinData = &'static mut Sequence;
 type TxTransfer<C, P, SM> = SingleBuffering<Channel<C>, PinData, Tx<(P, SM)>>;
+// type TxTransfer<C1, C2, P, SM> =
+//     DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ReadNext<PinData>>;
+// type WaitingTxTransfer<C1, C2, P, SM> =
+//     DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ()>;
 
-const NUM_BUFFERS: usize = 2;
+const NUM_BUFFERS: usize = 3;
+// Set to 64, the maximum number of single rises and falls for 32 channels within a looping time period
 const BUFFER_SIZE: usize = 64;
 // The number of dummy transitions to insert into the data to delay the DMA interrupt (if zero then
 // no zone is used)
@@ -47,9 +56,40 @@ pub trait Handler: Any {
     fn try_next_dma_sequence(&mut self);
 }
 
-impl Handler for () {
-    fn try_next_dma_sequence(&mut self) {
-        // no-op
+// Downcast hack since conversion between dyn Handler and dyn Any not yet supported.
+// Copy of dyn Any handler (but only for mut variants).
+impl dyn Handler {
+    #[inline]
+    pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
+        if self.is::<T>() {
+            // SAFETY: just checked whether we are pointing to the correct type, and we can rely on
+            // that check for memory safety because we have implemented Any for all types; no other
+            // impls can exist as they would conflict with our impl.
+            unsafe { Some(self.downcast_mut_unchecked()) }
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    /// # Safety
+    /// caller guarantees that T is the correct type
+    pub unsafe fn downcast_mut_unchecked<T: Any>(&mut self) -> &mut T {
+        debug_assert!(self.is::<T>());
+        // SAFETY: caller guarantees that T is the correct type
+        unsafe { &mut *(self as *mut dyn Handler as *mut T) }
+    }
+
+    #[inline]
+    pub fn is<T: Any>(&self) -> bool {
+        // Get `TypeId` of the type this function is instantiated with.
+        let t = TypeId::of::<T>();
+
+        // Get `TypeId` of the type in the trait object (`self`).
+        let concrete = self.type_id();
+
+        // Compare both `TypeId`s on equality.
+        t == concrete
     }
 }
 
@@ -80,26 +120,27 @@ pub struct GlobalStates<const NUM_CHANNELS: usize> {
 }
 
 impl<const NUM_CHANNELS: usize> GlobalStates<NUM_CHANNELS> {
+    /// Returns global state if types match.
     pub(crate) fn get_mut<C, P, SM, F>(
         &mut self,
-        channel: &mut Channel<C>,
+        _channel: &mut Channel<C>,
         ctor: F,
-    ) -> &'static mut GlobalState<C, P, SM>
+    ) -> Option<&'static mut GlobalState<C, P, SM>>
     where
         C: ChannelIndex + 'static,
         P: PIOExt + 'static,
         SM: StateMachineIndex + 'static,
         F: FnOnce() -> &'static mut GlobalState<C, P, SM>,
     {
-        let entry = &mut self.states[channel.id() as usize];
+        let entry = &mut self.states[<C as ChannelIndex>::id() as usize];
         if entry.is_none() {
             *entry = Some(ctor())
         }
-        let state = self.states[channel.id() as usize]
-            .as_mut()
-            .and_then(|a| (a as &mut dyn Any).downcast_mut::<GlobalState<C, P, SM>>())
-            .unwrap();
-        unsafe { &mut *(state as *mut GlobalState<C, P, SM>) }
+
+        let state: *mut &'static mut dyn Handler = entry.as_mut().unwrap() as *mut _;
+        // Safety: Already reference to static mut, which is already unsafe.
+        let state: &'static mut dyn Handler = unsafe { *state };
+        <dyn Handler>::downcast_mut::<GlobalState<C, P, SM>>(state)
     }
 }
 
@@ -122,20 +163,11 @@ type SequenceList = [Sequence; NUM_BUFFERS];
 
 impl SequenceListBuilder {
     fn build() -> SequenceList {
-        let mut sequences: [MaybeUninit<Sequence>; NUM_BUFFERS] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        for sequence in &mut sequences {
-            sequence.write(Sequence::new());
-        }
-        let mut sequences =
-            unsafe { core::mem::transmute::<_, [Sequence; NUM_BUFFERS]>(sequences) };
+        let mut sequences = alloc_array::<Sequence, NUM_BUFFERS>(Sequence::new);
 
-        // Safety: First index of Sequence.data is always initialized.
-        unsafe {
-            // Need to set a delay otherwise a lockup occurs when first changing frequency
-            for sequence in &mut sequences {
-                sequence.data[0].assume_init_mut().delay = 10;
-            }
+        // Need to set a delay otherwise a lockup occurs when first changing frequency
+        for sequence in &mut sequences {
+            sequence.data[0].delay = 10;
         }
 
         sequences
@@ -152,13 +184,17 @@ where
     loop_sequences: &'static Mutex<RefCell<SequenceList>>,
     indices: &'static Mutex<RefCell<Indices>>,
     tx_transfer: Option<TxTransfer<C, P, SM>>,
+    next_buf: Option<&'static mut Sequence>,
 }
 
 #[inline]
 pub fn dma_interrupt<const NUM_PINS: usize>(global_state: &'static mut GlobalStates<NUM_PINS>) {
+    defmt::trace!("interrupt triggered");
     for state in global_state.states.iter_mut().flatten() {
+        defmt::trace!("checking next dma sequence");
         state.try_next_dma_sequence();
     }
+    defmt::trace!("done checking dma irq");
 }
 
 impl<C, P, SM> InterruptHandler<C, P, SM>
@@ -168,31 +204,54 @@ where
     SM: StateMachineIndex,
 {
     pub fn try_next_dma_sequence(&mut self) {
-        critical_section::with(|cs| {
-            let (channel, tx_buf, tx) = {
-                let mut tx_transfer = self.tx_transfer.take().unwrap();
+        let (dma_channel, tx_buf, tx) = {
+            if let Some(mut tx_transfer) = self.tx_transfer.take() {
                 if tx_transfer.check_irq0() && tx_transfer.is_done() {
+                    defmt::debug!("waiting");
                     tx_transfer.wait()
                 } else {
+                    defmt::debug!("not waiting");
+                    // tx_transfer.listen_irq0();
+                    self.tx_transfer = Some(tx_transfer);
                     return;
                 }
-            };
+            } else {
+                defmt::info!("no transfer");
+                return;
+            }
+        };
+        self.next_dma_sequence(dma_channel, tx_buf, tx);
+    }
 
+    pub(self) fn next_dma_sequence(
+        &mut self,
+        mut dma_channel: Channel<C>,
+        tx_buf: &'static mut Sequence,
+        tx: Tx<(P, SM)>,
+    ) {
+        let next_buf = self.next_buf.take().unwrap();
+        critical_section::with(|cs| {
             let mut indices = self.indices.borrow(cs).borrow_mut();
-            if indices.last_written_index == indices.read_index {
+            if indices.last_written_index != indices.read_index {
                 indices.read_index = indices.last_written_index;
+                defmt::info!("using sequences");
                 core::mem::swap(
-                    tx_buf,
+                    next_buf,
                     &mut self.sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             } else {
+                defmt::info!("using loop sequences");
                 core::mem::swap(
-                    tx_buf,
+                    next_buf,
                     &mut self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             }
 
-            self.tx_transfer = Some(SingleBufferingConfig::new(channel, tx_buf, tx).start());
+            defmt::info!("Transfering {}", next_buf.data[0]);
+
+            dma_channel.listen_irq0();
+            self.tx_transfer = Some(SingleBufferingConfig::new(dma_channel, next_buf, tx).start());
+            self.next_buf = Some(tx_buf);
         });
     }
 }
@@ -214,6 +273,7 @@ where
     top: u32,
 }
 
+// TODO validate pin modes for pins.
 pub struct PwmClusterBuilder<const NUM_PINS: usize> {
     pin_mask: u32,
     side_set_pin: u8,
@@ -273,13 +333,15 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         global_state.as_mut().unwrap()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn build<C, P, SM>(
         self,
         servo_pins: [DynPin; NUM_PINS],
-        side_pin: DynPin,
+        _side_pin: DynPin,
         pio: &mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
-        mut dma: Channel<C>,
+        dma_channel: Channel<C>,
+        sys_clock: &SystemClock,
         global_state: &'static mut GlobalState<C, P, SM>,
     ) -> PwmCluster<NUM_PINS, P, SM>
     where
@@ -290,35 +352,47 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         let pwm_program = pio_file!("./src/pwm.pio", select_program("debug_pwm_cluster"),);
         let program = pwm_program.program;
         let installed = pio.install(&program).unwrap();
-        let (int, frac) = (0, 0); // as slow as possible, 0 interpreted as 65,536.
-        let trailing_zeros: u8 = self.pin_mask.trailing_zeros() as u8;
-        let num_pins = (32 - trailing_zeros).saturating_sub(self.pin_mask.leading_zeros() as u8);
-        let (mut sm, _rx, tx) = hal::pio::PIOBuilder::from_program(installed)
-            .out_pins(trailing_zeros, num_pins)
-            .side_set_pin_base(side_pin.id().num)
-            .clock_divisor_fixed_point(int, frac)
+        // const CLOCK_DIVIDER: u32 = 500_000;
+        const CLOCK_DIVIDER: u32 = 500_000;
+        let (int, frac) = (sys_clock.freq().to_Hz() / CLOCK_DIVIDER, 0);
+        let base_pin: u8 = self.pin_mask.trailing_zeros() as u8;
+        let num_pins = (32 - base_pin).saturating_sub(self.pin_mask.leading_zeros() as u8);
+        let (mut sm, _, tx) = hal::pio::PIOBuilder::from_program(installed)
+            .out_pins(base_pin, num_pins)
+            .set_pins(0, 0)
+            .side_set_pin_base(self.side_set_pin)
+            .out_shift_direction(ShiftDirection::Left)
+            .autopull(true)
+            .pull_threshold(32)
+            .buffers(Buffers::RxTx)
+            .clock_divisor_fixed_point(int as u16, frac)
             .build(sm);
         sm.set_pindirs(
-            servo_pins
-                .into_iter()
-                .chain(Some(side_pin).into_iter())
-                .map(|pin| (pin.id().num, PinDir::Output)),
+            [(self.side_set_pin, PinDir::Output)].into_iter().chain(
+                servo_pins
+                    .into_iter()
+                    .map(|pin| (pin.id().num, PinDir::Output)),
+            ),
         );
-        let sm = sm.start();
+        sm.set_pins([(self.side_set_pin, PinState::Low)]);
 
-        // Transfer a single message via DMA.
-        let sequence = Sequence::new();
-        let tx_buf = singleton!(: Sequence = sequence).unwrap();
-        // Enable DMA_IRQ_0 for this channel, but interrupt not triggered until unmasked
-        // below.
-        dma.listen_irq0();
-        let tx_transfer = SingleBufferingConfig::new(dma, tx_buf, tx).start();
-        global_state.handler = Some(InterruptHandler {
+        let mut sequence = Sequence::new();
+        sequence.data[0].delay = 10;
+        let tx_buf = singleton!(: Sequence = sequence.clone()).unwrap();
+        // Insert two dummy sequences to start.
+        let mut interrupt_handler = InterruptHandler {
             sequences: &global_state.sequences,
             loop_sequences: &global_state.loop_sequences,
             indices: &global_state.indices,
-            tx_transfer: Some(tx_transfer),
-        });
+            tx_transfer: None,
+            next_buf: Some(tx_buf),
+        };
+
+        let tx_buf = singleton!(: Sequence = sequence).unwrap();
+        interrupt_handler.next_dma_sequence(dma_channel, tx_buf, tx);
+        global_state.handler = Some(interrupt_handler);
+
+        let sm = sm.start();
 
         PwmCluster::new(
             sm,
@@ -635,12 +709,7 @@ where
                 Self::sorted_insert(
                     &mut self.looping_transitions,
                     &mut looping_data_size,
-                    TransitionData {
-                        channel: channel_idx as u8,
-                        level: channel_wrap_end,
-                        state: state.polarity,
-                        dummy: false,
-                    },
+                    TransitionData::new(channel_idx as u8, channel_wrap_end, state.polarity),
                 );
             }
         }
@@ -684,12 +753,14 @@ where
             write_index
         });
 
+        defmt::info!("populating sequences");
         self.populate_sequence(
             TransitionType::Normal,
             data_size,
             write_index,
             &mut pin_states,
         );
+        defmt::info!("populating loop sequences");
         self.populate_sequence(
             TransitionType::Loop,
             looping_data_size,
@@ -740,19 +811,21 @@ where
                 }
             };
 
+            // Reset the sequence, otherwise we end up appending and weird thing happen.
+            sequence.data.clear();
+
             let mut data_index = 0;
             let mut current_level = 0;
 
             // Populate the selected write sequence with pin states and delays.
-            while data_index < transitions.len() {
+            while data_index < transition_size {
                 // Set the next level to be the top, initially.
                 let mut next_level = self.top;
-                let mut should_break = false;
 
-                while {
+                loop {
                     // Is the level of this transition at the current level being checked?
                     let transition = &transitions[data_index];
-                    if transition.level < current_level {
+                    if transition.level <= current_level {
                         // Yes, so add the transition state to the pin states mask, if it's not a
                         // dummy transition.
                         if !transition.dummy {
@@ -770,24 +843,21 @@ where
                     } else {
                         // No, it is higher, so set it as our next level and break out of the loop.
                         next_level = transition.level;
-                        should_break = true;
+                        break;
                     }
 
-                    // while
-                    data_index < transitions.len()
-                } {
-                    if should_break {
+                    if data_index >= transition_size {
                         break;
                     }
                 }
 
                 // Add the transition to the sequence.
-                sequence.data[sequence.size as usize].write(Transition {
+                let transition = Transition {
                     mask: *pin_states,
                     delay: (next_level - current_level) - 1,
-                });
-                sequence.size += 1;
-
+                };
+                defmt::info!("Writing {}", transition);
+                sequence.data.push(transition);
                 current_level = next_level;
             }
         });
@@ -798,12 +868,13 @@ pub enum PwmError {
     MissingChannel,
 }
 
+#[derive(Copy, Clone, Format)]
 enum TransitionType {
     Normal,
     Loop,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Format)]
 struct ChannelState {
     level: u32,
     offset: u32,
@@ -826,17 +897,15 @@ impl ChannelState {
 
 #[derive(Clone)]
 pub struct Sequence {
-    size: u32,
-    data: [MaybeUninit<Transition>; BUFFER_SIZE],
+    data: ArrayVec<Transition, BUFFER_SIZE>,
 }
 
 impl Sequence {
     pub fn new() -> Self {
-        // Safety: Arrays are always init.
-        let mut data: [MaybeUninit<Transition>; BUFFER_SIZE] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        data[0].write(Transition::new());
-        Self { size: 1, data }
+        let mut data = ArrayVec::default();
+        // Always room for first item.
+        data.push(Transition::new());
+        Self { data }
     }
 }
 
@@ -854,7 +923,7 @@ impl ReadTarget for &mut Sequence {
     }
 
     fn rx_address_count(&self) -> (u32, u32) {
-        (&self.data as *const _ as u32, self.size * 2_u32)
+        (self.data.as_ptr() as u32, self.data.len() as u32 * 2)
     }
 
     fn rx_increment(&self) -> bool {
@@ -869,13 +938,24 @@ pub struct Transition {
     delay: u32,
 }
 
+impl Format for Transition {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(
+            f,
+            "Transition {{ mask: {:#032b}, delay: {} }}",
+            self.mask,
+            self.delay
+        )
+    }
+}
+
 impl Transition {
     fn new() -> Self {
         Self { mask: 0, delay: 0 }
     }
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Format)]
 struct TransitionData {
     channel: u8,
     level: u32,

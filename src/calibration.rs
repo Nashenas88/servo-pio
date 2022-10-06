@@ -139,7 +139,9 @@ impl<'a> Iterator for AngularCalibrationIter<'a> {
     type Item = (Point, Point);
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.count {
+        let count = self.count;
+        self.count += 1;
+        match count {
             0 => Some((self.calibration.min, self.calibration.mid)),
             1 => Some((self.calibration.mid, self.calibration.max)),
             _ => None,
@@ -210,7 +212,9 @@ impl<'a> Iterator for LinearCalibrationIter<'a> {
     type Item = (Point, Point);
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.count {
+        let count = self.count;
+        self.count += 1;
+        match count {
             0 => Some((self.calibration.min, self.calibration.max)),
             _ => None,
         }
@@ -285,7 +289,9 @@ impl<'a> Iterator for ContinuousCalibrationIter<'a> {
     type Item = (Point, Point);
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.count {
+        let count = self.count;
+        self.count += 1;
+        match count {
             0 => Some((self.calibration.min, self.calibration.max)),
             _ => None,
         }
