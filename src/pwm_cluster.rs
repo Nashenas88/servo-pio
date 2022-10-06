@@ -353,7 +353,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         let program = pwm_program.program;
         let installed = pio.install(&program).unwrap();
         // const CLOCK_DIVIDER: u32 = 500_000;
-        const CLOCK_DIVIDER: u32 = 500_000;
+        const CLOCK_DIVIDER: u32 = 10_000;
         let (int, frac) = (sys_clock.freq().to_Hz() / CLOCK_DIVIDER, 0);
         let base_pin: u8 = self.pin_mask.trailing_zeros() as u8;
         let num_pins = (32 - base_pin).saturating_sub(self.pin_mask.leading_zeros() as u8);
