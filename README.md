@@ -1,15 +1,9 @@
-# Project template for rp2040-hal
+# servo-pio
 
-This template is intended as a starting point for developing your own firmware based on the rp2040-hal.
+This project is under construction.
 
-It includes all of the `knurling-rs` tooling as showcased in https://github.com/knurling-rs/app-template (`defmt`, `defmt-rtt`, `panic-probe`, `flip-link`) to make development as easy as possible.
-
-`probe-run` is configured as the default runner, so you can start your program as easy as
-```sh
-cargo run --release
-```
-
-If you aren't using a debugger (or want to use cargo-embed/probe-rs-debugger), check out [alternative runners](#alternative-runners) for other options
+It's original designed to work with the Pimoroni Servo2040 board, but should be able to work with
+any rp2040-based board.
 
 <!-- TABLE OF CONTENTS -->
 <details open="open">
@@ -42,7 +36,7 @@ If you aren't using a debugger (or want to use cargo-embed/probe-rs-debugger), c
 
 - A CMSIS-DAP probe. (J-Link and other probes will not work with probe-run)
 
-  You can use a second Pico as a CMSIS-DAP debug probe by installing the following firmware on it:
+  You can use a Pico as a CMSIS-DAP debug probe by installing the following firmware on it:
   https://github.com/majbthrd/DapperMime/releases/download/20210225/raspberry_pi_pico-DapperMime.uf2
 
   More details on supported debug probes can be found in [debug_probes.md](debug_probes.md)
@@ -258,10 +252,10 @@ The contents of this repository are dual-licensed under the _MIT OR Apache
 Apache-2.0 licence when you re-use this code. See `MIT` or `APACHE2.0` for more
 information on each specific licence.
 
+Note that this code is a derivative of https://github.com/pimoroni/pimoroni-pico's
+servo_cluster and pwm_cluster drivers. pwm.pio comes directly from pwm_cluster.pio in Pimoroni's
+project. Their cose is licensed under the _MIT_ License. See `Pimoroni.MIT` for more information on
+their license.
+
 Any submissions to this project (e.g. as Pull Requests) must be made available
 under these terms.
-
-## Contact
-
-Raise an issue: [https://github.com/rp-rs/rp2040-project-template/issues](https://github.com/rp-rs/rp2040-project-template/issues)
-Chat to us on Matrix: [#rp-rs:matrix.org](https://matrix.to/#/#rp-rs:matrix.org)

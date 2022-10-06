@@ -1,0 +1,14 @@
+Copyright (c) 2022 Paul D. Faria
+
+MIT OR Apache-2.0
+
+---
+
+servo-pio was ported from https://github.com/pimoroni/pimoroni-pico,
+servo_cluster from drivers/servo
+pwm_cluster from drivers/pwm
+pwm.pio from drivers/pwm/pwm_cluster.pio
+
+Copyright (c) 2021 Pimoroni Ltd
+
+Pimoroni.MIT
