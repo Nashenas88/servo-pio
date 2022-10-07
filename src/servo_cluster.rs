@@ -25,19 +25,21 @@ where
 pub struct ServoClusterBuilder<
     'a,
     Cal,
-    C,
+    C1,
+    C2,
     P,
     SM,
     const NUM_SERVOS: usize,
     const NUM_CHANNELS: usize,
 > where
-    C: ChannelIndex + 'static,
+    C1: ChannelIndex + 'static,
+    C2: ChannelIndex + 'static,
     P: PIOExt + 'static,
     SM: StateMachineIndex + 'static,
 {
     pio: &'a mut PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
-    dma_channel: Channel<C>,
+    dma_channels: (Channel<C1>, Channel<C2>),
     global_states: &'static mut GlobalStates<NUM_CHANNELS>,
     pins: Option<[DynPin; NUM_SERVOS]>,
     side_set_pin: Option<DynPin>,
@@ -46,12 +48,13 @@ pub struct ServoClusterBuilder<
     auto_phase: Option<bool>,
 }
 
-impl<'a, Cal, C, P, SM, const NUM_SERVOS: usize, const NUM_CHANNELS: usize>
-    ServoClusterBuilder<'a, Cal, C, P, SM, NUM_SERVOS, NUM_CHANNELS>
+impl<'a, Cal, C1, C2, P, SM, const NUM_SERVOS: usize, const NUM_CHANNELS: usize>
+    ServoClusterBuilder<'a, Cal, C1, C2, P, SM, NUM_SERVOS, NUM_CHANNELS>
 where
     Cal: CalibrationData + Default + Clone,
     <Cal as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
-    C: ChannelIndex,
+    C1: ChannelIndex,
+    C2: ChannelIndex,
     P: PIOExt + FunctionConfig,
     Function<P>: PinMode,
     SM: StateMachineIndex,
@@ -139,7 +142,7 @@ where
     pub fn build(
         mut self,
         system_clock: &SystemClock,
-        maybe_global_state: &'static mut Option<GlobalState<C, P, SM>>,
+        maybe_global_state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
     ) -> Result<ServoCluster<NUM_SERVOS, P, SM, Cal>, ServoClusterBuilderError> {
         let pins = self.pins.ok_or(ServoClusterBuilderError::MissingPins)?;
         let side_set_pin = self
@@ -149,7 +152,7 @@ where
             self.calibration,
             self.auto_phase.unwrap_or(true),
         );
-        let global_state = self.global_states.get_mut(&mut self.dma_channel, move || {
+        let global_state = self.global_states.get_mut(&mut self.dma_channels, move || {
             PwmClusterBuilder::<NUM_SERVOS>::prep_global_state(maybe_global_state)
         });
         let mut pwms = {
@@ -163,7 +166,7 @@ where
                             side_set_pin,
                             self.pio,
                             self.sm,
-                            self.dma_channel,
+                            self.dma_channels,
                             system_clock,
                             global_state.ok_or(ServoClusterBuilderError::MismatchingGlobalState)?,
                         )
@@ -225,20 +228,21 @@ where
     P: PIOExt,
     SM: StateMachineIndex,
 {
-    pub fn builder<C, const NUM_CHANNELS: usize>(
+    pub fn builder<C1, C2, const NUM_CHANNELS: usize>(
         pio: &'a mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
-        dma_channel: Channel<C>,
+        dma_channels: (Channel<C1>, Channel<C2>),
         global_states: &'static mut GlobalStates<NUM_CHANNELS>,
-    ) -> ServoClusterBuilder<'a, Ca, C, P, SM, NUM_SERVOS, NUM_CHANNELS>
+    ) -> ServoClusterBuilder<'a, Ca, C1, C2, P, SM, NUM_SERVOS, NUM_CHANNELS>
     where
-        C: ChannelIndex + 'static,
+        C1: ChannelIndex + 'static,
+        C2: ChannelIndex + 'static,
         P: PIOExt + 'static,
     {
         ServoClusterBuilder {
             pio,
             sm,
-            dma_channel,
+            dma_channels,
             global_states,
             pins: None,
             side_set_pin: None,

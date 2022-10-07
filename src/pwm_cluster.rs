@@ -7,7 +7,10 @@ use defmt::Format;
 use fugit::HertzU32;
 use pio_proc::pio_file;
 use rp2040_hal::clocks::SystemClock;
-use rp2040_hal::dma::{Channel, ChannelIndex, ReadTarget, SingleBuffering, SingleBufferingConfig};
+use rp2040_hal::dma::{
+    Channel, ChannelIndex, DoubleBuffering, DoubleBufferingConfig, ReadNext, ReadTarget,
+    SingleBuffering, SingleChannel,
+};
 use rp2040_hal::gpio::DynPin;
 use rp2040_hal::pio::{
     PIOExt, PinDir, Running, StateMachine, StateMachineIndex, Tx, UninitStateMachine, PIO,
@@ -17,11 +20,12 @@ use rp2040_hal::{self, Clock};
 use crate::alloc_array;
 
 type PinData = &'static mut Sequence;
-type TxTransfer<C, P, SM> = SingleBuffering<Channel<C>, PinData, Tx<(P, SM)>>;
-// type TxTransfer<C1, C2, P, SM> =
-//     DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ReadNext<PinData>>;
-// type WaitingTxTransfer<C1, C2, P, SM> =
-//     DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ()>;
+#[allow(dead_code)]
+type SingleTxTransfer<C, P, SM> = SingleBuffering<Channel<C>, PinData, Tx<(P, SM)>>;
+type TxTransfer<C1, C2, P, SM> =
+    DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ReadNext<PinData>>;
+type WaitingTxTransfer<C1, C2, P, SM> =
+    DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ()>;
 
 const NUM_BUFFERS: usize = 3;
 // Set to 64, the maximum number of single rises and falls for 32 channels within a looping time period
@@ -37,13 +41,14 @@ const MAX_PWM_CLUSTER_WRAP: u64 = u16::MAX as u64;
 // KEEP IN SYNC WITH pwm.pio!
 const PWM_CLUSTER_CYCLES: u64 = 5;
 
-pub struct GlobalState<C, P, SM>
+pub struct GlobalState<C1, C2, P, SM>
 where
-    C: ChannelIndex,
+    C1: ChannelIndex,
+    C2: ChannelIndex,
     P: PIOExt,
     SM: StateMachineIndex,
 {
-    handler: Option<InterruptHandler<C, P, SM>>,
+    handler: Option<InterruptHandler<C1, C2, P, SM>>,
     indices: Mutex<RefCell<Indices>>,
     sequences: Mutex<RefCell<SequenceList>>,
     loop_sequences: Mutex<RefCell<SequenceList>>,
@@ -90,9 +95,10 @@ impl dyn Handler {
     }
 }
 
-impl<C, P, SM> Handler for GlobalState<C, P, SM>
+impl<C1, C2, P, SM> Handler for GlobalState<C1, C2, P, SM>
 where
-    C: ChannelIndex + 'static,
+    C1: ChannelIndex + 'static,
+    C2: ChannelIndex + 'static,
     P: PIOExt + 'static,
     SM: StateMachineIndex + 'static,
 {
@@ -109,18 +115,19 @@ pub struct GlobalStates<const NUM_CHANNELS: usize> {
 
 impl<const NUM_CHANNELS: usize> GlobalStates<NUM_CHANNELS> {
     /// Returns global state if types match.
-    pub(crate) fn get_mut<C, P, SM, F>(
+    pub(crate) fn get_mut<C1, C2, P, SM, F>(
         &mut self,
-        _channel: &mut Channel<C>,
+        _channels: &mut (Channel<C1>, Channel<C2>),
         ctor: F,
-    ) -> Option<*mut GlobalState<C, P, SM>>
+    ) -> Option<*mut GlobalState<C1, C2, P, SM>>
     where
-        C: ChannelIndex + 'static,
+        C1: ChannelIndex + 'static,
+        C2: ChannelIndex + 'static,
         P: PIOExt + 'static,
         SM: StateMachineIndex + 'static,
-        F: FnOnce() -> &'static mut GlobalState<C, P, SM>,
+        F: FnOnce() -> &'static mut GlobalState<C1, C2, P, SM>,
     {
-        let entry = &mut self.states[<C as ChannelIndex>::id() as usize];
+        let entry = &mut self.states[<C1 as ChannelIndex>::id() as usize];
         if entry.is_none() {
             *entry = Some(ctor())
         }
@@ -128,7 +135,7 @@ impl<const NUM_CHANNELS: usize> GlobalStates<NUM_CHANNELS> {
         let state: *mut &'static mut dyn Handler = entry.as_mut().unwrap() as *mut _;
         // Safety: Already reference to static mut, which is already unsafe.
         let state: &'static mut dyn Handler = unsafe { *state };
-        <dyn Handler>::downcast_mut::<GlobalState<C, P, SM>>(state).map(|d| d as *mut _)
+        <dyn Handler>::downcast_mut::<GlobalState<C1, C2, P, SM>>(state).map(|d| d as *mut _)
     }
 }
 
@@ -162,17 +169,17 @@ impl SequenceListBuilder {
     }
 }
 
-pub struct InterruptHandler<C, P, SM>
+pub struct InterruptHandler<C1, C2, P, SM>
 where
-    C: ChannelIndex,
+    C1: ChannelIndex,
+    C2: ChannelIndex,
     P: PIOExt,
     SM: StateMachineIndex,
 {
     sequences: &'static Mutex<RefCell<SequenceList>>,
     loop_sequences: &'static Mutex<RefCell<SequenceList>>,
     indices: &'static Mutex<RefCell<Indices>>,
-    tx_transfer: Option<TxTransfer<C, P, SM>>,
-    next_buf: Option<&'static mut Sequence>,
+    tx_transfer: Option<TxTransfer<C1, C2, P, SM>>,
 }
 
 #[inline]
@@ -182,14 +189,15 @@ pub fn dma_interrupt<const NUM_PINS: usize>(global_state: &'static mut GlobalSta
     }
 }
 
-impl<C, P, SM> InterruptHandler<C, P, SM>
+impl<C1, C2, P, SM> InterruptHandler<C1, C2, P, SM>
 where
-    C: ChannelIndex,
+    C1: ChannelIndex,
+    C2: ChannelIndex,
     P: PIOExt,
     SM: StateMachineIndex,
 {
     pub fn try_next_dma_sequence(&mut self) {
-        let (dma_channel, tx_buf, tx) = {
+        let (tx_buf, tx) = {
             if let Some(mut tx_transfer) = self.tx_transfer.take() {
                 if tx_transfer.check_irq0() && tx_transfer.is_done() {
                     tx_transfer.wait()
@@ -201,33 +209,30 @@ where
                 return;
             }
         };
-        self.next_dma_sequence(dma_channel, tx_buf, tx);
+        self.next_dma_sequence(tx_buf, tx);
     }
 
     pub(self) fn next_dma_sequence(
         &mut self,
-        dma_channel: Channel<C>,
         tx_buf: &'static mut Sequence,
-        tx: Tx<(P, SM)>,
+        tx: WaitingTxTransfer<C1, C2, P, SM>,
     ) {
-        let next_buf = self.next_buf.take().unwrap();
         critical_section::with(|cs| {
             let mut indices = self.indices.borrow(cs).borrow_mut();
             if indices.last_written_index != indices.read_index {
                 indices.read_index = indices.last_written_index;
                 core::mem::swap(
-                    next_buf,
+                    tx_buf,
                     &mut self.sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             } else {
                 core::mem::swap(
-                    next_buf,
+                    tx_buf,
                     &mut self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             }
 
-            self.tx_transfer = Some(SingleBufferingConfig::new(dma_channel, next_buf, tx).start());
-            self.next_buf = Some(tx_buf);
+            self.tx_transfer = Some(tx.read_next(tx_buf));
         });
     }
 }
@@ -290,11 +295,12 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         self
     }
 
-    pub fn prep_global_state<C, P, SM>(
-        global_state: &'static mut Option<GlobalState<C, P, SM>>,
-    ) -> &'static mut GlobalState<C, P, SM>
+    pub fn prep_global_state<C1, C2, P, SM>(
+        global_state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
+    ) -> &'static mut GlobalState<C1, C2, P, SM>
     where
-        C: ChannelIndex,
+        C1: ChannelIndex,
+        C2: ChannelIndex,
         P: PIOExt,
         SM: StateMachineIndex,
     {
@@ -312,18 +318,19 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     /// # Safety
     /// abc 123
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn build<C, P, SM>(
+    pub unsafe fn build<C1, C2, P, SM>(
         self,
         servo_pins: [DynPin; NUM_PINS],
         _side_pin: DynPin,
         pio: &mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
-        dma_channel: Channel<C>,
+        mut dma_channels: (Channel<C1>, Channel<C2>),
         sys_clock: &SystemClock,
-        global_state: *mut GlobalState<C, P, SM>,
+        global_state: *mut GlobalState<C1, C2, P, SM>,
     ) -> PwmCluster<NUM_PINS, P, SM>
     where
-        C: ChannelIndex,
+        C1: ChannelIndex,
+        C2: ChannelIndex,
         P: PIOExt,
         SM: StateMachineIndex,
     {
@@ -351,7 +358,6 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
 
         let mut sequence = Sequence::new();
         sequence.data[0].delay = 10;
-        let tx_buf = singleton!(: Sequence = sequence.clone()).unwrap();
         // Insert two dummy sequences to start.
 
         let mut interrupt_handler = unsafe {
@@ -360,12 +366,15 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
                 loop_sequences: &(*global_state).loop_sequences,
                 indices: &(*global_state).indices,
                 tx_transfer: None,
-                next_buf: Some(tx_buf),
             }
         };
 
+        let tx_buf = singleton!(: Sequence = sequence.clone()).unwrap();
+        dma_channels.0.listen_irq0();
+        dma_channels.1.listen_irq0();
+        let tx = DoubleBufferingConfig::new(dma_channels, tx_buf, tx).start();
         let tx_buf = singleton!(: Sequence = sequence).unwrap();
-        interrupt_handler.next_dma_sequence(dma_channel, tx_buf, tx);
+        interrupt_handler.next_dma_sequence(tx_buf, tx);
         unsafe { (*global_state).handler = Some(interrupt_handler) };
 
         let sm = sm.start();

@@ -24,15 +24,15 @@ use ws2812_pio::Ws2812Direct;
 const LED_BRIGHTNESS: u8 = 16;
 const NUM_SERVOS: usize = 2;
 const NUM_CHANNELS: usize = 12;
-static mut STATE1: Option<GlobalState<CH0, PIO0, SM0>> = {
-    const NONE_HACK: Option<GlobalState<CH0, PIO0, SM0>> = None;
+static mut STATE1: Option<GlobalState<CH0, CH1, PIO0, SM0>> = {
+    const NONE_HACK: Option<GlobalState<CH0, CH1, PIO0, SM0>> = None;
     NONE_HACK
 };
-#[allow(dead_code)]
-static mut STATE2: Option<GlobalState<CH1, PIO0, SM0>> = {
-    const NONE_HACK: Option<GlobalState<CH1, PIO0, SM0>> = None;
-    NONE_HACK
-};
+// #[allow(dead_code)]
+// static mut STATE2: Option<GlobalState<CH1, CH2, PIO0, SM0>> = {
+//     const NONE_HACK: Option<GlobalState<CH1, CH2, PIO0, SM0>> = None;
+//     NONE_HACK
+// };
 static mut GLOBALS: GlobalStates<NUM_CHANNELS> = {
     const NONE_HACK: Option<&'static mut dyn Handler> = None;
     GlobalStates {
@@ -89,7 +89,7 @@ fn main() -> ! {
     let mut servo_cluster = match build_servo_cluster(
         pio0,
         sm0,
-        dma.ch0,
+        (dma.ch0, dma.ch1),
         servo_pins,
         side_set_pin,
         clocks.system_clock,
@@ -166,21 +166,22 @@ enum BuildError {
     Build(ServoClusterBuilderError),
 }
 
-fn build_servo_cluster<C, P, SM>(
+fn build_servo_cluster<C1, C2, P, SM>(
     mut pio: PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
-    dma_channel: Channel<C>,
+    dma_channels: (Channel<C1>, Channel<C2>),
     servo_pins: [DynPin; NUM_SERVOS],
     side_set_pin: DynPin,
     system_clock: SystemClock,
-    state: &'static mut Option<GlobalState<C, P, SM>>,
+    state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
 ) -> Result<ServoCluster<NUM_SERVOS, P, SM, AngularCalibration>, BuildError>
 where
-    C: ChannelIndex,
+    C1: ChannelIndex,
+    C2: ChannelIndex,
     P: PIOExt + FunctionConfig,
     SM: StateMachineIndex,
 {
-    ServoCluster::builder(&mut pio, sm, dma_channel, unsafe { &mut GLOBALS })
+    ServoCluster::builder(&mut pio, sm, dma_channels, unsafe { &mut GLOBALS })
         .pins(servo_pins)
         .map_err(BuildError::Gpio)?
         .side_set_pin(side_set_pin)
