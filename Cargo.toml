@@ -24,6 +24,9 @@ smart-leds = "0.3.0"
 ws2812-pio = "0.4.0"
 arrayvec = { version = "0.7.2", default-features = false }
 
+[features]
+debug_pio = []
+
 [dev-dependencies]
 pimoroni-servo2040 = { git = "https://github.com/nashenas88/rp-hal", branch = "dma-offshoot"}
 

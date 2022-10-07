@@ -42,6 +42,7 @@ pub struct ServoClusterBuilder<
     dma_channels: (Channel<C1>, Channel<C2>),
     global_states: &'static mut GlobalStates<NUM_CHANNELS>,
     pins: Option<[DynPin; NUM_SERVOS]>,
+    #[cfg(feature = "debug_pio")]
     side_set_pin: Option<DynPin>,
     pwm_frequency: Option<f32>,
     calibration: Option<Calibration<Cal>>,
@@ -125,6 +126,7 @@ where
         Ok(self)
     }
 
+    #[cfg(feature = "debug_pio")]
     pub fn side_set_pin(mut self, side_set_pin: DynPin) -> Result<Self, GpioError> {
         if side_set_pin.mode() == <Function<P> as PinMode>::DYN {
             self.side_set_pin = Some(side_set_pin);
@@ -145,9 +147,6 @@ where
         maybe_global_state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
     ) -> Result<ServoCluster<NUM_SERVOS, P, SM, Cal>, ServoClusterBuilderError> {
         let pins = self.pins.ok_or(ServoClusterBuilderError::MissingPins)?;
-        let side_set_pin = self
-            .side_set_pin
-            .ok_or(ServoClusterBuilderError::MissingSideSet)?;
         let (states, servo_phases) = ServoCluster::<NUM_SERVOS, P, SM, _>::create_servo_states(
             self.calibration,
             self.auto_phase.unwrap_or(true),
@@ -158,18 +157,23 @@ where
         let mut pwms = {
             {
                 unsafe {
-                    PwmCluster::<NUM_SERVOS, P, SM>::builder()
-                        .pins(&pins)
-                        .side_pin(&side_set_pin)
-                        .build(
-                            pins,
-                            side_set_pin,
-                            self.pio,
-                            self.sm,
-                            self.dma_channels,
-                            system_clock,
-                            global_state.ok_or(ServoClusterBuilderError::MismatchingGlobalState)?,
-                        )
+                    #[allow(unused_mut)]
+                    let mut cluster = PwmCluster::<NUM_SERVOS, P, SM>::builder().pins(&pins);
+                    #[cfg(feature = "debug_pio")]
+                    {
+                        let side_set_pin = self
+                            .side_set_pin
+                            .ok_or(ServoClusterBuilderError::MissingSideSet)?;
+                        cluster = cluster.side_pin(&side_set_pin);
+                    }
+                    cluster.build(
+                        pins,
+                        self.pio,
+                        self.sm,
+                        self.dma_channels,
+                        system_clock,
+                        global_state.ok_or(ServoClusterBuilderError::MismatchingGlobalState)?,
+                    )
                 }
             }
         };
@@ -245,6 +249,7 @@ where
             dma_channels,
             global_states,
             pins: None,
+            #[cfg(feature = "debug_pio")]
             side_set_pin: None,
             pwm_frequency: None,
             calibration: None,

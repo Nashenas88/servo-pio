@@ -4,7 +4,6 @@
 #![no_std]
 #![no_main]
 
-use defmt::Format;
 use defmt_rtt as _;
 use embedded_hal::timer::CountDown;
 use fugit::ExtU64;
@@ -17,7 +16,7 @@ use pimoroni_servo2040::hal::{self, pac, Clock};
 use pimoroni_servo2040::pac::{interrupt, PIO0};
 use servo_pio::calibration::{AngularCalibration, Calibration};
 use servo_pio::pwm_cluster::{dma_interrupt, GlobalState, GlobalStates, Handler};
-use servo_pio::servo_cluster::{ServoCluster, ServoClusterBuilderError};
+use servo_pio::servo_cluster::{ServoCluster, ServoClusterBuilder, ServoClusterBuilderError};
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812Direct;
 
@@ -69,7 +68,6 @@ fn main() -> ! {
         pins.servo4.into_mode::<FunctionPio0>().into(),
         pins.servo7.into_mode::<FunctionPio0>().into(),
     ];
-    let side_set_pin = pins.scl.into_mode::<FunctionPio0>().into();
 
     let (pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
     let (mut pio1, sm10, _, _, _) = pac.PIO1.split(&mut pac.RESETS);
@@ -91,7 +89,8 @@ fn main() -> ! {
         sm0,
         (dma.ch0, dma.ch1),
         servo_pins,
-        side_set_pin,
+        #[cfg(feature = "debug_pio")]
+        pins.scl.into_mode::<FunctionPio0>().into(),
         clocks.system_clock,
         unsafe { &mut STATE1 },
     ) {
@@ -171,7 +170,7 @@ fn build_servo_cluster<C1, C2, P, SM>(
     sm: UninitStateMachine<(P, SM)>,
     dma_channels: (Channel<C1>, Channel<C2>),
     servo_pins: [DynPin; NUM_SERVOS],
-    side_set_pin: DynPin,
+    #[cfg(feature = "debug_pio")] side_set_pin: DynPin,
     system_clock: SystemClock,
     state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
 ) -> Result<ServoCluster<NUM_SERVOS, P, SM, AngularCalibration>, BuildError>
@@ -181,11 +180,25 @@ where
     P: PIOExt + FunctionConfig,
     SM: StateMachineIndex,
 {
-    ServoCluster::builder(&mut pio, sm, dma_channels, unsafe { &mut GLOBALS })
+    let mut builder: ServoClusterBuilder<
+        '_,
+        AngularCalibration,
+        C1,
+        C2,
+        P,
+        SM,
+        NUM_SERVOS,
+        NUM_CHANNELS,
+    > = ServoCluster::builder(&mut pio, sm, dma_channels, unsafe { &mut GLOBALS })
         .pins(servo_pins)
-        .map_err(BuildError::Gpio)?
-        .side_set_pin(side_set_pin)
-        .map_err(BuildError::Gpio)?
+        .map_err(BuildError::Gpio)?;
+    #[cfg(feature = "debug_pio")]
+    {
+        builder = builder
+            .side_set_pin(side_set_pin)
+            .map_err(BuildError::Gpio)?;
+    }
+    builder
         .pwm_frequency(50.0)
         .calibration(Calibration::new())
         .build(&system_clock, state)

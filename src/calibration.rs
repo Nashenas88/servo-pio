@@ -5,13 +5,7 @@ pub const DEFAULT_MAX_PULSE: f32 = 2500.0;
 const LOWER_HARD_LIMIT: f32 = 400.0;
 const UPPER_HARD_LIMIT: f32 = 2600.0;
 
-#[derive(Copy, Clone)]
-pub enum CalibrationType {
-    Angular,
-    Linear,
-    Continuous,
-}
-
+/// Simple type to manage corresponding pulse/value pairs.
 #[derive(Copy, Clone)]
 pub struct Point {
     pub pulse: f32,
@@ -27,6 +21,7 @@ impl Point {
     }
 }
 
+/// Iterator abstraction over the various kinds of calibration data.
 pub enum CalibrationIters<'a, C: 'a> {
     Angular(AngularCalibrationIter<'a>),
     Linear(LinearCalibrationIter<'a>),
@@ -50,16 +45,35 @@ where
     }
 }
 
+/// A trait to cover any type that can represent calibration data.
 pub trait CalibrationData {
     const LEN: usize;
     type Custom;
+    /// The first data point in the calibration data. This might overlap with
+    /// [Self::penultimate].
     fn first(&self) -> Point;
+
+    /// The second data point in the calibration data. This might overlap with
+    /// [Self::last].
     fn second(&self) -> Point;
+
+    /// The penultimate (just before last) data point in the calibration data.
+    /// This might overlap with [Self::first].
     fn penultimate(&self) -> Point;
+
+    /// The last data point in the calibration data. This might overlap with
+    /// [Self::second].
     fn last(&self) -> Point;
+
+    /// Returns an iterator that walks over the calibration data in a 2-slot
+    /// window. This is equivalent to the [`windows`] method on [slices].
+    ///
+    /// [`windows`]: slice::windows
+    /// [slices]: slice
     fn windows(&self) -> CalibrationIters<'_, Self::Custom>;
 }
 
+/// Empty type for the default case where no custom calibration format is being used.
 #[derive(Default, Copy, Clone)]
 pub struct NoCustom;
 
@@ -95,10 +109,14 @@ impl Iterator for NoCustom {
     }
 }
 
+/// Calibration data best suited for angular servos.
 #[derive(Copy, Clone)]
 pub struct AngularCalibration {
+    /// The lowest angle the servo can reach.
     min: Point,
+    /// The mid-point angle for the servo.
     mid: Point,
+    /// The largest angle the servo can reach.
     max: Point,
 }
 
@@ -174,8 +192,11 @@ impl CalibrationData for AngularCalibration {
     }
 }
 
+/// Calibration data best suited for linear servos.
 pub struct LinearCalibration {
+    /// The shortest length the servo can move to.
     min: Point,
+    /// The largest length the servo can move to.
     max: Point,
 }
 
@@ -246,9 +267,13 @@ impl CalibrationData for LinearCalibration {
     }
 }
 
+/// Calibration data best suited for contiuous rotation servos.
 pub struct ContinuousCalibration {
+    /// The value representing max-speed negative rotation.
     min: Point,
+    /// The value representing no rotation.
     mid: Point,
+    /// The value representing max-speed positive rotation.
     max: Point,
 }
 
@@ -323,11 +348,19 @@ impl CalibrationData for ContinuousCalibration {
     }
 }
 
+/// Calibration data for some type implementing [CalibrationData].
 #[derive(Clone)]
 pub struct Calibration<C> {
+    /// The specific calibration data.
     calibration: C,
-    limit_lower: bool,
-    limit_upper: bool,
+
+    /// Whether or not to limit based on the first calibration point. If true,
+    /// the servo can never be set below `calibration.first()`. Defaults to true.
+    pub limit_lower: bool,
+
+    /// Whether or not to limit based on the last calibration point. If true,
+    /// the servo can never be set above `calibration.last()`. Defaults to true.
+    pub limit_upper: bool,
 }
 
 impl<C> Calibration<C>

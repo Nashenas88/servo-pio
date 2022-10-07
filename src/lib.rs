@@ -1,3 +1,9 @@
+//! # servo-pio
+//!
+//! This crate allows controlling up to 30 servos on rp2040-based boards. It
+//! requires one PIO state machine and 2 dma channels for every servo cluster
+//! created.
+
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 

@@ -5,6 +5,7 @@ use cortex_m::singleton;
 use critical_section::Mutex;
 use defmt::Format;
 use fugit::HertzU32;
+use pio::Program;
 use pio_proc::pio_file;
 use rp2040_hal::clocks::SystemClock;
 use rp2040_hal::dma::{
@@ -54,6 +55,7 @@ where
     loop_sequences: Mutex<RefCell<SequenceList>>,
 }
 
+/// A trait to abstract over [GlobalState] structs with different generic parameters.
 pub trait Handler: Any {
     fn try_next_dma_sequence(&mut self);
 }
@@ -62,7 +64,7 @@ pub trait Handler: Any {
 // Copy of dyn Any handler (but only for mut variants).
 impl dyn Handler {
     #[inline]
-    pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
+    pub(crate) fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
         if self.is::<T>() {
             // SAFETY: just checked whether we are pointing to the correct type, and we can rely on
             // that check for memory safety because we have implemented Any for all types; no other
@@ -76,14 +78,14 @@ impl dyn Handler {
     #[inline]
     /// # Safety
     /// caller guarantees that T is the correct type
-    pub unsafe fn downcast_mut_unchecked<T: Any>(&mut self) -> &mut T {
+    pub(crate) unsafe fn downcast_mut_unchecked<T: Any>(&mut self) -> &mut T {
         debug_assert!(self.is::<T>());
         // SAFETY: caller guarantees that T is the correct type
         unsafe { &mut *(self as *mut dyn Handler as *mut T) }
     }
 
     #[inline]
-    pub fn is<T: Any>(&self) -> bool {
+    pub(crate) fn is<T: Any>(&self) -> bool {
         // Get `TypeId` of the type this function is instantiated with.
         let t = TypeId::of::<T>();
 
@@ -109,6 +111,7 @@ where
     }
 }
 
+/// A struct that can be used to store multiple [GlobalState]s.
 pub struct GlobalStates<const NUM_CHANNELS: usize> {
     pub states: [Option<&'static mut dyn Handler>; NUM_CHANNELS],
 }
@@ -139,9 +142,12 @@ impl<const NUM_CHANNELS: usize> GlobalStates<NUM_CHANNELS> {
     }
 }
 
+/// Indices for the current sequence to write to.
 struct Indices {
-    pub last_written_index: usize,
-    pub read_index: usize,
+    /// The last written index.
+    last_written_index: usize,
+    /// The current read index.
+    read_index: usize,
 }
 
 impl Indices {
@@ -153,10 +159,12 @@ impl Indices {
     }
 }
 
+/// Builder for array of [Sequence]s.
 struct SequenceListBuilder;
 type SequenceList = [Sequence; NUM_BUFFERS];
 
 impl SequenceListBuilder {
+    /// Construct a list of sequences with the first transition in each defaulted to a delay of 10.
     fn build() -> SequenceList {
         let mut sequences = alloc_array::<Sequence, NUM_BUFFERS>(Sequence::new);
 
@@ -182,6 +190,7 @@ where
     tx_transfer: Option<TxTransfer<C1, C2, P, SM>>,
 }
 
+/// DMA interrupt handler. Call directly from DMA_IRQ_0 or DMA_IRQ_1.
 #[inline]
 pub fn dma_interrupt<const NUM_PINS: usize>(global_state: &'static mut GlobalStates<NUM_PINS>) {
     for state in global_state.states.iter_mut().flatten() {
@@ -196,47 +205,57 @@ where
     P: PIOExt,
     SM: StateMachineIndex,
 {
-    pub fn try_next_dma_sequence(&mut self) {
+    /// Try to setup the next dma sequence..
+    fn try_next_dma_sequence(&mut self) {
         let (tx_buf, tx) = {
             if let Some(mut tx_transfer) = self.tx_transfer.take() {
+                // Check the interrupt to clear it if this is the transfer that's ready.
                 if tx_transfer.check_irq0() && tx_transfer.is_done() {
                     tx_transfer.wait()
                 } else {
+                    // Either this wasn't the transfer that triggered the interrupt, or it did, but
+                    // for some reason it's not ready. Place it back so we can try again next time.
                     self.tx_transfer = Some(tx_transfer);
                     return;
                 }
             } else {
+                // This interrupt handler has not been configured with a handler yet.
                 return;
             }
         };
         self.next_dma_sequence(tx_buf, tx);
     }
 
-    pub(self) fn next_dma_sequence(
+    fn next_dma_sequence(
         &mut self,
         tx_buf: &'static mut Sequence,
         tx: WaitingTxTransfer<C1, C2, P, SM>,
     ) {
         critical_section::with(|cs| {
             let mut indices = self.indices.borrow(cs).borrow_mut();
+            // If there was a write since the last read...
             if indices.last_written_index != indices.read_index {
+                // Update the read index and use sequences.
                 indices.read_index = indices.last_written_index;
                 core::mem::swap(
                     tx_buf,
                     &mut self.sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             } else {
+                // Otherwise just use the loop sequences.
                 core::mem::swap(
                     tx_buf,
                     &mut self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             }
 
+            // Start the next transfer.
             self.tx_transfer = Some(tx.read_next(tx_buf));
         });
     }
 }
 
+/// A type to manage a cluster of PWM signals.
 pub struct PwmCluster<const NUM_PINS: usize, P, SM>
 where
     P: PIOExt,
@@ -254,7 +273,7 @@ where
     top: u32,
 }
 
-// TODO validate pin modes for pins.
+/// A type to build a [PwmCluster]
 pub struct PwmClusterBuilder<const NUM_PINS: usize> {
     pin_mask: u32,
     side_set_pin: u8,
@@ -262,6 +281,7 @@ pub struct PwmClusterBuilder<const NUM_PINS: usize> {
 }
 
 impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
+    /// Construct a new [PwmClusterBuilder].
     pub fn new() -> Self {
         Self {
             pin_mask: 0,
@@ -270,6 +290,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         }
     }
 
+    /// Set the pin_base for this cluster. NUM_PINS will be used to determine the pin count.
     pub fn pin_base(mut self, base_pin: DynPin) -> Self {
         let base_pin = base_pin.id().num;
         for (i, pin_map) in self.channel_to_pin_map.iter_mut().enumerate() {
@@ -280,6 +301,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         self
     }
 
+    /// Set the pins directly from the `pins` parameter.
     pub fn pins(mut self, pins: &[DynPin; NUM_PINS]) -> Self {
         for (pin, pin_map) in pins.iter().zip(self.channel_to_pin_map.iter_mut()) {
             let pin_id = pin.id().num;
@@ -290,12 +312,17 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         self
     }
 
+    /// Set the side pin for debugging.
+    ///
+    /// This method can be enabled with the "debug_pio" feature.
+    #[cfg(feature = "debug_pio")]
     pub fn side_pin(mut self, side_set_pin: &DynPin) -> Self {
         self.side_set_pin = side_set_pin.id().num;
         self
     }
 
-    pub fn prep_global_state<C1, C2, P, SM>(
+    /// Initialize [GlobalState]
+    pub(crate) fn prep_global_state<C1, C2, P, SM>(
         global_state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
     ) -> &'static mut GlobalState<C1, C2, P, SM>
     where
@@ -315,13 +342,14 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         global_state.as_mut().unwrap()
     }
 
+    /// Build a PwmCluster.
+    ///
     /// # Safety
-    /// abc 123
+    /// Caller must ensure that global_state is not being read/mutated anywhere else.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn build<C1, C2, P, SM>(
         self,
         servo_pins: [DynPin; NUM_PINS],
-        _side_pin: DynPin,
         pio: &mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
         mut dma_channels: (Channel<C1>, Channel<C2>),
@@ -334,8 +362,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         P: PIOExt,
         SM: StateMachineIndex,
     {
-        let pwm_program = pio_file!("./src/pwm.pio", select_program("debug_pwm_cluster"),);
-        let program = pwm_program.program;
+        let program = Self::pio_program();
         let installed = pio.install(&program).unwrap();
         const DESIRED_CLOCK_HZ: u32 = 500_000;
         let sys_hz = sys_clock.freq().to_Hz();
@@ -358,8 +385,8 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
 
         let mut sequence = Sequence::new();
         sequence.data[0].delay = 10;
-        // Insert two dummy sequences to start.
 
+        // Safety: caller guarantees that global_state is not being read/mutated anywhere else.
         let mut interrupt_handler = unsafe {
             InterruptHandler {
                 sequences: &(*global_state).sequences,
@@ -375,10 +402,13 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         let tx = DoubleBufferingConfig::new(dma_channels, tx_buf, tx).start();
         let tx_buf = singleton!(: Sequence = sequence).unwrap();
         interrupt_handler.next_dma_sequence(tx_buf, tx);
+
+        // Safety: caller guarantees that global_state is not being read/mutated anywhere else.
         unsafe { (*global_state).handler = Some(interrupt_handler) };
 
         let sm = sm.start();
 
+        // Safety: caller guarantees that global_state is not being read/mutated anywhere else.
         unsafe {
             PwmCluster::new(
                 sm,
@@ -388,6 +418,20 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
                 &(*global_state).loop_sequences,
             )
         }
+    }
+
+    /// Get PIO program data.
+    #[cfg(feature = "debug_pio")]
+    fn pio_program() -> Program<32> {
+        let pwm_program = pio_file!("./src/pwm.pio", select_program("debug_pwm_cluster"));
+        pwm_program.program
+    }
+
+    /// Get PIO program data.
+    #[cfg(not(feature = "debug_pio"))]
+    fn pio_program() -> Program<32> {
+        let pwm_program = pio_file!("./src/pwm.pio", select_program("pwm_cluster"));
+        pwm_program.program
     }
 }
 
@@ -402,10 +446,17 @@ where
     P: PIOExt,
     SM: StateMachineIndex,
 {
+    /// The number of channels used by this cluster.
+    pub const CHANNEL_COUNT: usize = NUM_PINS;
+    /// The number of channel pairs used by this cluster.
+    pub const CHANNEL_PAIR_COUNT: usize = NUM_PINS / 2;
+
+    /// Get a [PwmClusterBuilder].
     pub fn builder() -> PwmClusterBuilder<NUM_PINS> {
         PwmClusterBuilder::new()
     }
 
+    /// Construct the cluster.
     fn new(
         sm: StateMachine<(P, SM), Running>,
         channel_to_pin_map: [u8; NUM_PINS],
@@ -423,7 +474,7 @@ where
             channels,
             sequences,
             loop_sequences,
-            loading_zone: false,
+            loading_zone: true,
             top: 0,
             indices,
             transitions,
@@ -431,6 +482,7 @@ where
         }
     }
 
+    /// Calculate the pwm factors (div and frac) from the system clock and desired frequency.
     pub fn calculate_pwm_factors(system_clock_hz: HertzU32, freq: f32) -> Option<(u32, u32)> {
         let source_hz = system_clock_hz.to_Hz() as u64 / PWM_CLUSTER_CYCLES;
 
@@ -473,7 +525,7 @@ where
                 }
             }
 
-            // Only return valid factors if the divisor is actually achievable
+            // Only return valid factors if the divisor is actually achievable.
             if div256_top >= 256 && div256_top <= ((u8::MAX as u64) << 8) {
                 Some((top as u32, div256_top as u32))
             } else {
@@ -484,6 +536,7 @@ where
         }
     }
 
+    /// Set the clock divisor for this cluster.
     pub fn clock_divisor_fixed_point(&mut self, div: u16, frac: u8) {
         if let Some(sm) = self.sm.take() {
             let mut sm = sm.stop();
@@ -492,14 +545,7 @@ where
         }
     }
 
-    pub const fn channel_count(&self) -> u8 {
-        NUM_PINS as u8
-    }
-
-    pub const fn channel_pair_count(&self) -> u8 {
-        NUM_PINS as u8 / 2
-    }
-
+    /// The configured pwm level for the supplied `channel`.
     pub fn channel_level(&self, channel: u8) -> Result<u32, PwmError> {
         self.channels
             .get(channel as usize)
@@ -507,6 +553,8 @@ where
             .ok_or(PwmError::MissingChannel)
     }
 
+    /// Set the pwm level for the supplied `channel`. If `load` is true, update
+    /// the cluster's data in the PIO state machine.
     pub fn set_channel_level(
         &mut self,
         channel: u8,
@@ -531,6 +579,8 @@ where
             .ok_or(PwmError::MissingChannel)
     }
 
+    /// Set the start offset for the supplied `channel`. If `load` is true,
+    /// update the cluster's data in the PIO state machine.
     pub fn set_channel_offset(
         &mut self,
         channel: u8,
@@ -554,6 +604,8 @@ where
             .ok_or(PwmError::MissingChannel)
     }
 
+    /// Set the polarity for the supplied `channel`. If `load` is true, update
+    /// the cluster's data in the PIO state machine.
     pub fn set_channel_polarity(
         &mut self,
         channel: u8,
@@ -570,10 +622,16 @@ where
         Ok(())
     }
 
+    /// Gets the top value for the pwm counter. This is equivalent to [`Slice::get_top`] when using
+    /// [pac::PWM].
+    ///
+    /// [`Slice::get_top`]: rp2040_hal::pwm::Slice
     pub fn top(&self) -> u32 {
         self.top
     }
 
+    /// Set the top value for the supplied `channel`. If `load` is true, update
+    /// the cluster's data in the PIO state machine.
     pub fn set_top(&mut self, top: u32, load_pwm: bool) {
         self.top = top.max(1); // Cannot have a wrap of zero.
         if load_pwm {
@@ -581,6 +639,7 @@ where
         }
     }
 
+    /// Load the pwm data into the PIO state machine.
     pub fn load_pwm(&mut self) {
         let mut data_size = 0;
         let mut looping_data_size = 0;
@@ -751,6 +810,7 @@ where
         });
     }
 
+    /// Insert `data` into `transitions` in sorted order.
     fn sorted_insert(transitions: &mut [TransitionData], size: &mut usize, data: TransitionData) {
         let mut i = *size;
         while i > 0 && transitions[i - 1].level > data.level {
@@ -761,6 +821,8 @@ where
         *size += 1;
     }
 
+    /// Populate the sequence of kind `TransitionType` with `transition_size` number of elements
+    /// into sequence at `sequence_id`. Updates `pin_states` with the current states for each pin.
     fn populate_sequence(
         &mut self,
         transition_type: TransitionType,
@@ -840,22 +902,33 @@ where
     }
 }
 
+/// Error for PwnCluster methods.
 pub enum PwmError {
+    /// The supplied channel was not part of the PwmCluster.
     MissingChannel,
 }
 
+/// Kinds of transitions.
 #[derive(Copy, Clone, Format)]
 enum TransitionType {
+    /// Normal types are used when a new update comes in.
     Normal,
+    /// Loop types are used to repeat the currently setup structure of updates.
     Loop,
 }
 
+/// State used for each channel.
 #[derive(Copy, Clone, Format)]
 struct ChannelState {
+    /// The level the channel is currently set to.
     level: u32,
+    /// The offset the channel should use when starting a new high signal.
     offset: u32,
+    /// Whether to invert the high/low signals.
     polarity: bool,
+    /// Track when level wraps around the `top` value of the cluster.
     overrun: u32,
+    /// Helper storage for overrun to account for multiple loads between DMA reads.
     next_overrun: u32,
 }
 
@@ -871,12 +944,15 @@ impl ChannelState {
     }
 }
 
+/// A Sequence of [Transition]s
 #[derive(Clone)]
 pub struct Sequence {
+    /// Inner array of transitions.
     data: ArrayVec<Transition, BUFFER_SIZE>,
 }
 
 impl Sequence {
+    /// Constructor for a Sequence.
     pub fn new() -> Self {
         let mut data = ArrayVec::default();
         // Always room for first item.
@@ -891,6 +967,7 @@ impl Default for Sequence {
     }
 }
 
+// ReadTarget allows Sequence to be used directly by the DMA.
 impl ReadTarget for &mut Sequence {
     type ReceivedWord = u32;
 
@@ -907,10 +984,14 @@ impl ReadTarget for &mut Sequence {
     }
 }
 
+/// Data to be sent to the PIO program.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct Transition {
+    /// Mask for pin states. All low bits turn off the signal for an output pin,
+    /// and all high bits turn on the signal for an output pin.
     mask: u32,
+    /// The number of cycles to wait before activating the next [Transition].
     delay: u32,
 }
 
@@ -926,20 +1007,27 @@ impl Format for Transition {
 }
 
 impl Transition {
+    /// Constructor for a [Transition].
     fn new() -> Self {
         Self { mask: 0, delay: 0 }
     }
 }
 
+/// Data for the PwmCluster to track transitions.
 #[derive(Copy, Clone, Default, Format)]
 struct TransitionData {
+    /// The channel that this transition applies to.
     channel: u8,
+    /// The level when this transition should occur.
     level: u32,
+    /// The state tracks whether to emit a high or low signal.
     state: bool,
+    /// Dummy states just keep the same state but allow delaying the DMA interrupt.
     dummy: bool,
 }
 
 impl TransitionData {
+    /// Construct a transition for `channel` at `level` and set it to `state`.
     fn new(channel: u8, level: u32, state: bool) -> Self {
         Self {
             channel,
@@ -949,6 +1037,7 @@ impl TransitionData {
         }
     }
 
+    /// Construct a dummy transition at `level`.
     fn with_level(level: u32) -> Self {
         Self {
             channel: 0,

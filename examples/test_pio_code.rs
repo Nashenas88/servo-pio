@@ -3,7 +3,7 @@
 
 use defmt_rtt as _;
 use hal::gpio::{AnyPin, FunctionPio0, PinId};
-use hal::pio::{Buffers, PIOExt, PinDir, ShiftDirection};
+use hal::pio::{PIOExt, PinDir};
 use hal::Clock;
 use panic_probe as _;
 use pimoroni_servo2040::hal;
