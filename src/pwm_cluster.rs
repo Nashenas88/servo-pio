@@ -5,17 +5,14 @@ use cortex_m::singleton;
 use critical_section::Mutex;
 use defmt::Format;
 use fugit::HertzU32;
-use pimoroni_servo2040::hal::clocks::SystemClock;
-use pimoroni_servo2040::hal::dma::{
-    Channel, ChannelIndex, ReadTarget, SingleBuffering, SingleBufferingConfig, SingleChannel,
-};
-use pimoroni_servo2040::hal::gpio::DynPin;
-use pimoroni_servo2040::hal::pio::{
-    Buffers, PIOExt, PinDir, PinState, Running, ShiftDirection, StateMachine, StateMachineIndex,
-    Stopped, Tx, UninitStateMachine, ValidStateMachine, PIO,
-};
-use pimoroni_servo2040::hal::{self, Clock};
 use pio_proc::pio_file;
+use rp2040_hal::clocks::SystemClock;
+use rp2040_hal::dma::{Channel, ChannelIndex, ReadTarget, SingleBuffering, SingleBufferingConfig};
+use rp2040_hal::gpio::DynPin;
+use rp2040_hal::pio::{
+    PIOExt, PinDir, Running, StateMachine, StateMachineIndex, Tx, UninitStateMachine, PIO,
+};
+use rp2040_hal::{self, Clock};
 
 use crate::alloc_array;
 
@@ -93,15 +90,6 @@ impl dyn Handler {
     }
 }
 
-enum PioStateMachine<VSM>
-where
-    VSM: ValidStateMachine,
-{
-    Stopped(StateMachine<VSM, Stopped>),
-    Transitioning,
-    Running(StateMachine<VSM, Running>),
-}
-
 impl<C, P, SM> Handler for GlobalState<C, P, SM>
 where
     C: ChannelIndex + 'static,
@@ -125,7 +113,7 @@ impl<const NUM_CHANNELS: usize> GlobalStates<NUM_CHANNELS> {
         &mut self,
         _channel: &mut Channel<C>,
         ctor: F,
-    ) -> Option<&'static mut GlobalState<C, P, SM>>
+    ) -> Option<*mut GlobalState<C, P, SM>>
     where
         C: ChannelIndex + 'static,
         P: PIOExt + 'static,
@@ -140,7 +128,7 @@ impl<const NUM_CHANNELS: usize> GlobalStates<NUM_CHANNELS> {
         let state: *mut &'static mut dyn Handler = entry.as_mut().unwrap() as *mut _;
         // Safety: Already reference to static mut, which is already unsafe.
         let state: &'static mut dyn Handler = unsafe { *state };
-        <dyn Handler>::downcast_mut::<GlobalState<C, P, SM>>(state)
+        <dyn Handler>::downcast_mut::<GlobalState<C, P, SM>>(state).map(|d| d as *mut _)
     }
 }
 
@@ -189,12 +177,9 @@ where
 
 #[inline]
 pub fn dma_interrupt<const NUM_PINS: usize>(global_state: &'static mut GlobalStates<NUM_PINS>) {
-    defmt::trace!("interrupt triggered");
     for state in global_state.states.iter_mut().flatten() {
-        defmt::trace!("checking next dma sequence");
         state.try_next_dma_sequence();
     }
-    defmt::trace!("done checking dma irq");
 }
 
 impl<C, P, SM> InterruptHandler<C, P, SM>
@@ -207,16 +192,12 @@ where
         let (dma_channel, tx_buf, tx) = {
             if let Some(mut tx_transfer) = self.tx_transfer.take() {
                 if tx_transfer.check_irq0() && tx_transfer.is_done() {
-                    defmt::debug!("waiting");
                     tx_transfer.wait()
                 } else {
-                    defmt::debug!("not waiting");
-                    // tx_transfer.listen_irq0();
                     self.tx_transfer = Some(tx_transfer);
                     return;
                 }
             } else {
-                defmt::info!("no transfer");
                 return;
             }
         };
@@ -225,7 +206,7 @@ where
 
     pub(self) fn next_dma_sequence(
         &mut self,
-        mut dma_channel: Channel<C>,
+        dma_channel: Channel<C>,
         tx_buf: &'static mut Sequence,
         tx: Tx<(P, SM)>,
     ) {
@@ -234,22 +215,17 @@ where
             let mut indices = self.indices.borrow(cs).borrow_mut();
             if indices.last_written_index != indices.read_index {
                 indices.read_index = indices.last_written_index;
-                defmt::info!("using sequences");
                 core::mem::swap(
                     next_buf,
                     &mut self.sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             } else {
-                defmt::info!("using loop sequences");
                 core::mem::swap(
                     next_buf,
                     &mut self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index],
                 );
             }
 
-            defmt::info!("Transfering {}", next_buf.data[0]);
-
-            dma_channel.listen_irq0();
             self.tx_transfer = Some(SingleBufferingConfig::new(dma_channel, next_buf, tx).start());
             self.next_buf = Some(tx_buf);
         });
@@ -261,7 +237,7 @@ where
     P: PIOExt,
     SM: StateMachineIndex,
 {
-    sm: PioStateMachine<(P, SM)>,
+    sm: Option<StateMachine<(P, SM), Running>>,
     channel_to_pin_map: [u8; NUM_PINS],
     channels: [ChannelState; NUM_PINS],
     sequences: &'static Mutex<RefCell<SequenceList>>,
@@ -333,8 +309,10 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         global_state.as_mut().unwrap()
     }
 
+    /// # Safety
+    /// abc 123
     #[allow(clippy::too_many_arguments)]
-    pub fn build<C, P, SM>(
+    pub unsafe fn build<C, P, SM>(
         self,
         servo_pins: [DynPin; NUM_PINS],
         _side_pin: DynPin,
@@ -342,7 +320,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         sm: UninitStateMachine<(P, SM)>,
         dma_channel: Channel<C>,
         sys_clock: &SystemClock,
-        global_state: &'static mut GlobalState<C, P, SM>,
+        global_state: *mut GlobalState<C, P, SM>,
     ) -> PwmCluster<NUM_PINS, P, SM>
     where
         C: ChannelIndex,
@@ -352,55 +330,55 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         let pwm_program = pio_file!("./src/pwm.pio", select_program("debug_pwm_cluster"),);
         let program = pwm_program.program;
         let installed = pio.install(&program).unwrap();
-        // const CLOCK_DIVIDER: u32 = 500_000;
-        const CLOCK_DIVIDER: u32 = 10_000;
-        let (int, frac) = (sys_clock.freq().to_Hz() / CLOCK_DIVIDER, 0);
-        let base_pin: u8 = self.pin_mask.trailing_zeros() as u8;
-        let num_pins = (32 - base_pin).saturating_sub(self.pin_mask.leading_zeros() as u8);
-        let (mut sm, _, tx) = hal::pio::PIOBuilder::from_program(installed)
-            .out_pins(base_pin, num_pins)
-            .set_pins(0, 0)
+        const DESIRED_CLOCK_HZ: u32 = 500_000;
+        let sys_hz = sys_clock.freq().to_Hz();
+        let (int, frac) = (
+            (sys_hz / DESIRED_CLOCK_HZ) as u16,
+            (sys_hz as u64 * 256 / DESIRED_CLOCK_HZ as u64) as u8,
+        );
+        let (mut sm, _, tx) = rp2040_hal::pio::PIOBuilder::from_program(installed)
+            .out_pins(0, self.side_set_pin)
             .side_set_pin_base(self.side_set_pin)
-            .out_shift_direction(ShiftDirection::Left)
-            .autopull(true)
-            .pull_threshold(32)
-            .buffers(Buffers::RxTx)
-            .clock_divisor_fixed_point(int as u16, frac)
+            .clock_divisor_fixed_point(int, frac)
             .build(sm);
         sm.set_pindirs(
-            [(self.side_set_pin, PinDir::Output)].into_iter().chain(
-                servo_pins
-                    .into_iter()
-                    .map(|pin| (pin.id().num, PinDir::Output)),
-            ),
+            servo_pins
+                .into_iter()
+                .map(|pin| pin.id().num)
+                .chain(Some(self.side_set_pin).into_iter())
+                .map(|id| (id, PinDir::Output)),
         );
-        sm.set_pins([(self.side_set_pin, PinState::Low)]);
 
         let mut sequence = Sequence::new();
         sequence.data[0].delay = 10;
         let tx_buf = singleton!(: Sequence = sequence.clone()).unwrap();
         // Insert two dummy sequences to start.
-        let mut interrupt_handler = InterruptHandler {
-            sequences: &global_state.sequences,
-            loop_sequences: &global_state.loop_sequences,
-            indices: &global_state.indices,
-            tx_transfer: None,
-            next_buf: Some(tx_buf),
+
+        let mut interrupt_handler = unsafe {
+            InterruptHandler {
+                sequences: &(*global_state).sequences,
+                loop_sequences: &(*global_state).loop_sequences,
+                indices: &(*global_state).indices,
+                tx_transfer: None,
+                next_buf: Some(tx_buf),
+            }
         };
 
         let tx_buf = singleton!(: Sequence = sequence).unwrap();
         interrupt_handler.next_dma_sequence(dma_channel, tx_buf, tx);
-        global_state.handler = Some(interrupt_handler);
+        unsafe { (*global_state).handler = Some(interrupt_handler) };
 
         let sm = sm.start();
 
-        PwmCluster::new(
-            sm,
-            self.channel_to_pin_map,
-            &global_state.indices,
-            &global_state.sequences,
-            &global_state.loop_sequences,
-        )
+        unsafe {
+            PwmCluster::new(
+                sm,
+                self.channel_to_pin_map,
+                &(*global_state).indices,
+                &(*global_state).sequences,
+                &(*global_state).loop_sequences,
+            )
+        }
     }
 }
 
@@ -431,12 +409,12 @@ where
         let looping_transitions = [TransitionData::default(); BUFFER_SIZE];
 
         Self {
-            sm: PioStateMachine::Running(sm),
+            sm: Some(sm),
             channel_to_pin_map,
             channels,
             sequences,
             loop_sequences,
-            loading_zone: true,
+            loading_zone: false,
             top: 0,
             indices,
             transitions,
@@ -496,20 +474,12 @@ where
             None
         }
     }
+
     pub fn clock_divisor_fixed_point(&mut self, div: u16, frac: u8) {
-        match &mut self.sm {
-            PioStateMachine::Stopped(sm) => sm.clock_divisor_fixed_point(div, frac),
-            PioStateMachine::Running(_) => {
-                let sm = core::mem::replace(&mut self.sm, PioStateMachine::Transitioning);
-                if let PioStateMachine::Running(sm) = sm {
-                    let mut sm = sm.stop();
-                    sm.clock_divisor_fixed_point(div, frac);
-                    let _ = core::mem::replace(&mut self.sm, PioStateMachine::Stopped(sm));
-                }
-            }
-            PioStateMachine::Transitioning => {
-                unreachable!()
-            }
+        if let Some(sm) = self.sm.take() {
+            let mut sm = sm.stop();
+            sm.clock_divisor_fixed_point(div, frac);
+            self.sm = Some(sm.start());
         }
     }
 
@@ -753,14 +723,12 @@ where
             write_index
         });
 
-        defmt::info!("populating sequences");
         self.populate_sequence(
             TransitionType::Normal,
             data_size,
             write_index,
             &mut pin_states,
         );
-        defmt::info!("populating loop sequences");
         self.populate_sequence(
             TransitionType::Loop,
             looping_data_size,
@@ -856,7 +824,6 @@ where
                     mask: *pin_states,
                     delay: (next_level - current_level) - 1,
                 };
-                defmt::info!("Writing {}", transition);
                 sequence.data.push(transition);
                 current_level = next_level;
             }

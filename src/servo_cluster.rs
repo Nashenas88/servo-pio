@@ -4,13 +4,11 @@ use crate::servo_state::{self, ServoState, DEFAULT_FREQUENCY};
 use crate::{alloc_array, alloc_array_by_index};
 use defmt::Format;
 use fugit::HertzU32;
-use pimoroni_servo2040::hal::clocks::SystemClock;
-use pimoroni_servo2040::hal::dma::{Channel, ChannelIndex};
-use pimoroni_servo2040::hal::gpio::{
-    DynPin, Error as GpioError, Function, FunctionConfig, PinMode,
-};
-use pimoroni_servo2040::hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO};
-use pimoroni_servo2040::hal::Clock;
+use rp2040_hal::clocks::SystemClock;
+use rp2040_hal::dma::{Channel, ChannelIndex};
+use rp2040_hal::gpio::{DynPin, Error as GpioError, Function, FunctionConfig, PinMode};
+use rp2040_hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO};
+use rp2040_hal::Clock;
 
 pub struct ServoCluster<const NUM_SERVOS: usize, P, SM, Cal = NoCustom>
 where
@@ -156,18 +154,20 @@ where
         });
         let mut pwms = {
             {
-                PwmCluster::<NUM_SERVOS, P, SM>::builder()
-                    .pins(&pins)
-                    .side_pin(&side_set_pin)
-                    .build(
-                        pins,
-                        side_set_pin,
-                        self.pio,
-                        self.sm,
-                        self.dma_channel,
-                        system_clock,
-                        global_state.ok_or(ServoClusterBuilderError::MismatchingGlobalState)?,
-                    )
+                unsafe {
+                    PwmCluster::<NUM_SERVOS, P, SM>::builder()
+                        .pins(&pins)
+                        .side_pin(&side_set_pin)
+                        .build(
+                            pins,
+                            side_set_pin,
+                            self.pio,
+                            self.sm,
+                            self.dma_channel,
+                            system_clock,
+                            global_state.ok_or(ServoClusterBuilderError::MismatchingGlobalState)?,
+                        )
+                }
             }
         };
 
@@ -394,7 +394,6 @@ where
     fn apply_pulse(&mut self, servo: u8, pulse: f32, load: bool) {
         // unwrap ok because servo checked at call sites.
         let level = ServoState::<Ca>::pulse_to_level(pulse, self.pwm_period, self.pwm_frequency);
-        defmt::trace!("Pulse to level is {}", level);
         let _ = self.pwms.set_channel_level(servo, level, load);
     }
 }

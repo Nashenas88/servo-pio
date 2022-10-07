@@ -66,8 +66,8 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
     let servo_pins: [_; NUM_SERVOS] = [
-        pins.servo3.into_mode::<FunctionPio0>().into(),
         pins.servo4.into_mode::<FunctionPio0>().into(),
+        pins.servo7.into_mode::<FunctionPio0>().into(),
     ];
     let side_set_pin = pins.scl.into_mode::<FunctionPio0>().into();
 
@@ -96,15 +96,15 @@ fn main() -> ! {
         unsafe { &mut STATE1 },
     ) {
         Ok(cluster) => cluster,
-        Err(e) => {
-            defmt::error!("Failed to build servo cluster: {:?}", e);
+        Err(_e) => {
+            // defmt::error!("Failed to build servo cluster: {:?}", e);
             #[allow(clippy::empty_loop)]
             loop {}
         }
     };
 
-    // Unmask the DMA interrupt so the handler can start running.
-    defmt::trace!("Unmasking dma");
+    // Unmask the DMA interrupt so the handler can start running. This can only
+    // be done after the servo cluster has been built.
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::DMA_IRQ_0);
     }
@@ -113,7 +113,7 @@ fn main() -> ! {
     const MID_PULSE: f32 = 1500.0;
     const MAX_PULSE: f32 = 2000.0;
     let movement_delay = 1000.millis();
-    servo_cluster.set_pulse(0, MAX_PULSE, true);
+    servo_cluster.set_pulse(1, MAX_PULSE, true);
     count_down.start(movement_delay * 5);
 
     #[allow(clippy::empty_loop)]
@@ -160,7 +160,7 @@ fn main() -> ! {
     }
 }
 
-#[derive(Format)]
+// #[derive(Format)]
 enum BuildError {
     Gpio(GpioError),
     Build(ServoClusterBuilderError),
@@ -193,7 +193,6 @@ where
 
 #[interrupt]
 fn DMA_IRQ_0() {
-    defmt::warn!("DMA_IRQ_0");
     critical_section::with(|_| {
         // Safety: we're within a critical section, so nothing else will modify global_state.
         dma_interrupt(unsafe { &mut GLOBALS });
