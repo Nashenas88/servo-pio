@@ -4,6 +4,8 @@
 #![no_std]
 #![no_main]
 
+use core::iter::once;
+use defmt::Format;
 use defmt_rtt as _;
 use embedded_hal::timer::CountDown;
 use fugit::ExtU64;
@@ -14,24 +16,19 @@ use pimoroni_servo2040::hal::gpio::{DynPin, Error as GpioError, FunctionConfig, 
 use pimoroni_servo2040::hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO, SM0};
 use pimoroni_servo2040::hal::{self, pac, Clock};
 use pimoroni_servo2040::pac::{interrupt, PIO0};
-use servo_pio::calibration::{AngularCalibration, Calibration};
+use servo_pio::calibration::AngularCalibration;
 use servo_pio::pwm_cluster::{dma_interrupt, GlobalState, GlobalStates, Handler};
 use servo_pio::servo_cluster::{ServoCluster, ServoClusterBuilder, ServoClusterBuilderError};
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812Direct;
 
 const LED_BRIGHTNESS: u8 = 16;
-const NUM_SERVOS: usize = 2;
+const NUM_SERVOS: usize = 4;
 const NUM_CHANNELS: usize = 12;
 static mut STATE1: Option<GlobalState<CH0, CH1, PIO0, SM0>> = {
     const NONE_HACK: Option<GlobalState<CH0, CH1, PIO0, SM0>> = None;
     NONE_HACK
 };
-// #[allow(dead_code)]
-// static mut STATE2: Option<GlobalState<CH1, CH2, PIO0, SM0>> = {
-//     const NONE_HACK: Option<GlobalState<CH1, CH2, PIO0, SM0>> = None;
-//     NONE_HACK
-// };
 static mut GLOBALS: GlobalStates<NUM_CHANNELS> = {
     const NONE_HACK: Option<&'static mut dyn Handler> = None;
     GlobalStates {
@@ -65,8 +62,10 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
     let servo_pins: [_; NUM_SERVOS] = [
+        pins.servo3.into_mode::<FunctionPio0>().into(),
         pins.servo4.into_mode::<FunctionPio0>().into(),
-        pins.servo7.into_mode::<FunctionPio0>().into(),
+        pins.servo5.into_mode::<FunctionPio0>().into(),
+        pins.servo6.into_mode::<FunctionPio0>().into(),
     ];
 
     let (pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
@@ -95,8 +94,12 @@ fn main() -> ! {
         unsafe { &mut STATE1 },
     ) {
         Ok(cluster) => cluster,
-        Err(_e) => {
-            // defmt::error!("Failed to build servo cluster: {:?}", e);
+        Err(e) => {
+            defmt::error!("Failed to build servo cluster: {:?}", e);
+            let _ = ws.write(brightness(
+                once(RGB8 { r: 255, g: 0, b: 0 }),
+                LED_BRIGHTNESS,
+            ));
             #[allow(clippy::empty_loop)]
             loop {}
         }
@@ -108,16 +111,21 @@ fn main() -> ! {
         pac::NVIC::unmask(pac::Interrupt::DMA_IRQ_0);
     }
 
-    const MIN_PULSE: f32 = 1000.0;
-    const MID_PULSE: f32 = 1500.0;
-    const MAX_PULSE: f32 = 2000.0;
+    const MIN_PULSE: f32 = 1500.0;
+    const MID_PULSE: f32 = 2000.0;
+    const MAX_PULSE: f32 = 2500.0;
     let movement_delay = 1000.millis();
-    servo_cluster.set_pulse(1, MAX_PULSE, true);
+
+    let [servo1, servo2, servo3, servo4] = servo_cluster.servos();
+
+    servo_cluster.set_pulse(servo1, MAX_PULSE, false);
+    servo_cluster.set_pulse(servo2, MID_PULSE, false);
+    servo_cluster.set_pulse(servo3, MIN_PULSE, false);
+    servo_cluster.set_value(servo4, 35.0, true);
     count_down.start(movement_delay * 5);
 
     #[allow(clippy::empty_loop)]
     loop {
-        // defmt::trace!("to 0");
         // let _ = ws.write(brightness(
         //     Some(RGB8 { r: 0, g: 255, b: 0 }).into_iter(),
         //     LED_BRIGHTNESS,
@@ -127,7 +135,6 @@ fn main() -> ! {
         // count_down.start(movement_delay);
         // let _ = nb::block!(count_down.wait());
 
-        // defmt::trace!("to 90");
         // // 0° to 90°
         // let _ = ws.write(brightness(
         //     Some(RGB8 { r: 0, g: 0, b: 0 }).into_iter(),
@@ -137,7 +144,6 @@ fn main() -> ! {
         // count_down.start(movement_delay);
         // let _ = nb::block!(count_down.wait());
 
-        // defmt::trace!("to 0");
         // // 90° to 0°
         // let _ = ws.write(brightness(
         //     Some(RGB8 { r: 0, g: 0, b: 255 }).into_iter(),
@@ -147,7 +153,6 @@ fn main() -> ! {
         // count_down.start(movement_delay);
         // let _ = nb::block!(count_down.wait());
 
-        // defmt::trace!("to -90");
         // // 0° to -90°
         // let _ = ws.write(brightness(
         //     Some(RGB8 { r: 0, g: 0, b: 0 }).into_iter(),
@@ -159,7 +164,7 @@ fn main() -> ! {
     }
 }
 
-// #[derive(Format)]
+#[derive(Format)]
 enum BuildError {
     Gpio(GpioError),
     Build(ServoClusterBuilderError),
@@ -180,6 +185,7 @@ where
     P: PIOExt + FunctionConfig,
     SM: StateMachineIndex,
 {
+    #[allow(unused_mut)]
     let mut builder: ServoClusterBuilder<
         '_,
         AngularCalibration,
@@ -200,7 +206,6 @@ where
     }
     builder
         .pwm_frequency(50.0)
-        .calibration(Calibration::new())
         .build(&system_clock, state)
         .map_err(BuildError::Build)
 }

@@ -26,6 +26,7 @@ arrayvec = { version = "0.7.2", default-features = false }
 
 [features]
 debug_pio = []
+defmt = ["rp2040-hal/defmt"]
 
 [dev-dependencies]
 pimoroni-servo2040 = { git = "https://github.com/nashenas88/rp-hal", branch = "dma-offshoot"}
@@ -83,4 +84,8 @@ lto = 'fat'
 opt-level = 3
 
 [patch.crates-io]
-rp2040-hal = { git = "https://github.com/nashenas88/rp-hal", branch = "dma-offshoot"}
+rp2040-hal = { git = "https://github.com/nashenas88/rp-hal", branch = "dma-offshoot", features = ["defmt"]}
+
+# [dev-dependencies.patch.crates-io]
+# rp2040-hal = { git = "https://github.com/nashenas88/rp-hal", branch = "dma-offshoot", features = ["defmt"]}
+

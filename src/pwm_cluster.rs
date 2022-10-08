@@ -18,7 +18,7 @@ use rp2040_hal::pio::{
 };
 use rp2040_hal::{self, Clock};
 
-use crate::alloc_array;
+use crate::initialize_array;
 
 type PinData = &'static mut Sequence;
 #[allow(dead_code)]
@@ -52,7 +52,13 @@ where
     handler: Option<InterruptHandler<C1, C2, P, SM>>,
     indices: Mutex<RefCell<Indices>>,
     sequences: Mutex<RefCell<SequenceList>>,
+    sequence1: Sequence,
+    sequence2: Sequence,
+    sequence3: Sequence,
     loop_sequences: Mutex<RefCell<SequenceList>>,
+    loop_sequence1: Sequence,
+    loop_sequence2: Sequence,
+    loop_sequence3: Sequence,
 }
 
 /// A trait to abstract over [GlobalState] structs with different generic parameters.
@@ -161,19 +167,12 @@ impl Indices {
 
 /// Builder for array of [Sequence]s.
 struct SequenceListBuilder;
-type SequenceList = [Sequence; NUM_BUFFERS];
+type SequenceList = [Option<*mut Sequence>; NUM_BUFFERS];
 
 impl SequenceListBuilder {
     /// Construct a list of sequences with the first transition in each defaulted to a delay of 10.
     fn build() -> SequenceList {
-        let mut sequences = alloc_array::<Sequence, NUM_BUFFERS>(Sequence::new);
-
-        // Need to set a delay otherwise a lockup occurs when first changing frequency
-        for sequence in &mut sequences {
-            sequence.data[0].delay = 10;
-        }
-
-        sequences
+        initialize_array::<Option<*mut Sequence>, NUM_BUFFERS>(|| None)
     }
 }
 
@@ -188,6 +187,9 @@ where
     loop_sequences: &'static Mutex<RefCell<SequenceList>>,
     indices: &'static Mutex<RefCell<Indices>>,
     tx_transfer: Option<TxTransfer<C1, C2, P, SM>>,
+    /// Track where the last sequence came from so we can put it back.
+    /// None means it came from the singletons, so don't worry
+    last_was_loop: Option<bool>,
 }
 
 /// DMA interrupt handler. Call directly from DMA_IRQ_0 or DMA_IRQ_1.
@@ -234,23 +236,41 @@ where
         critical_section::with(|cs| {
             let mut indices = self.indices.borrow(cs).borrow_mut();
             // If there was a write since the last read...
-            if indices.last_written_index != indices.read_index {
+            let next_buf = if indices.last_written_index != indices.read_index {
+                if let Some(last_was_loop) = self.last_was_loop {
+                    // Put the sequence back before updating.
+                    if last_was_loop {
+                        self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index] =
+                            Some(tx_buf);
+                    } else {
+                        self.sequences.borrow(cs).borrow_mut()[indices.read_index] = Some(tx_buf);
+                    }
+                }
+
                 // Update the read index and use sequences.
                 indices.read_index = indices.last_written_index;
-                core::mem::swap(
-                    tx_buf,
-                    &mut self.sequences.borrow(cs).borrow_mut()[indices.read_index],
-                );
+                self.last_was_loop = Some(false);
+                self.sequences.borrow(cs).borrow_mut()[indices.read_index]
+                    .take()
+                    .unwrap()
             } else {
                 // Otherwise just use the loop sequences.
-                core::mem::swap(
-                    tx_buf,
-                    &mut self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index],
-                );
-            }
+                if let Some(sequence) =
+                    self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index].take()
+                {
+                    self.last_was_loop = Some(true);
+                    // We took ownership from the sequence.
+                    sequence
+                } else {
+                    // We already have the buffer, so just re-use it.
+                    tx_buf as *mut _
+                }
+            };
 
             // Start the next transfer.
-            self.tx_transfer = Some(tx.read_next(tx_buf));
+            // Safety: We took ownership from the sequence list, so we're the only
+            // location that has access to this unique reference.
+            self.tx_transfer = Some(tx.read_next(unsafe { &mut *next_buf }));
         });
     }
 }
@@ -276,6 +296,7 @@ where
 /// A type to build a [PwmCluster]
 pub struct PwmClusterBuilder<const NUM_PINS: usize> {
     pin_mask: u32,
+    #[cfg(deature = "debug_pio")]
     side_set_pin: u8,
     channel_to_pin_map: [u8; NUM_PINS],
 }
@@ -285,6 +306,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     pub fn new() -> Self {
         Self {
             pin_mask: 0,
+            #[cfg(deature = "debug_pio")]
             side_set_pin: 0,
             channel_to_pin_map: [0; NUM_PINS],
         }
@@ -336,8 +358,29 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
                 handler: None,
                 indices: Mutex::new(RefCell::new(Indices::new())),
                 sequences: Mutex::new(RefCell::new(SequenceListBuilder::build())),
+                sequence1: Sequence::new_for_list(),
+                sequence2: Sequence::new_for_list(),
+                sequence3: Sequence::new_for_list(),
                 loop_sequences: Mutex::new(RefCell::new(SequenceListBuilder::build())),
-            })
+                loop_sequence1: Sequence::new_for_list(),
+                loop_sequence2: Sequence::new_for_list(),
+                loop_sequence3: Sequence::new_for_list(),
+            });
+            {
+                let state = (*global_state).as_mut().unwrap();
+                critical_section::with(|cs| {
+                    // Safety: These self-referential fields are ok because the global state is
+                    // guaranteed to be stored in a static.
+                    let mut sequences = state.sequences.borrow(cs).borrow_mut();
+                    sequences[0] = Some(&mut state.sequence1 as *mut _);
+                    sequences[1] = Some(&mut state.sequence2 as *mut _);
+                    sequences[2] = Some(&mut state.sequence3 as *mut _);
+                    let mut loop_sequences = state.loop_sequences.borrow(cs).borrow_mut();
+                    loop_sequences[0] = Some(&mut state.loop_sequence1 as *mut _);
+                    loop_sequences[1] = Some(&mut state.loop_sequence2 as *mut _);
+                    loop_sequences[2] = Some(&mut state.loop_sequence3 as *mut _);
+                });
+            }
         }
         global_state.as_mut().unwrap()
     }
@@ -370,21 +413,31 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
             (sys_hz / DESIRED_CLOCK_HZ) as u16,
             (sys_hz as u64 * 256 / DESIRED_CLOCK_HZ as u64) as u8,
         );
-        let (mut sm, _, tx) = rp2040_hal::pio::PIOBuilder::from_program(installed)
-            .out_pins(0, self.side_set_pin)
-            .side_set_pin_base(self.side_set_pin)
-            .clock_divisor_fixed_point(int, frac)
-            .build(sm);
-        sm.set_pindirs(
-            servo_pins
-                .into_iter()
-                .map(|pin| pin.id().num)
-                .chain(Some(self.side_set_pin).into_iter())
-                .map(|id| (id, PinDir::Output)),
-        );
+        let (mut sm, _, tx) = {
+            let mut builder = rp2040_hal::pio::PIOBuilder::from_program(installed);
+            #[cfg(not(feature = "debug_pio"))]
+            {
+                builder = builder.out_pins(0, 32)
+            }
+            #[cfg(deature = "debug_pio")]
+            {
+                builder = builder
+                    .out_pins(0, self.side_set_pin)
+                    .side_set_pin_base(self.side_set_pin)
+            }
+            builder.clock_divisor_fixed_point(int, frac).build(sm)
+        };
+        sm.set_pindirs({
+            #[allow(unused_mut)]
+            let mut iter = servo_pins.into_iter().map(|pin| pin.id().num);
+            #[cfg(feature = "debug_pio")]
+            {
+                iter = iter.chain(Some(self.side_set_pin).into_iter())
+            }
+            iter.map(|id| (id, PinDir::Output))
+        });
 
-        let mut sequence = Sequence::new();
-        sequence.data[0].delay = 10;
+        let sequence = Sequence::new_for_list();
 
         // Safety: caller guarantees that global_state is not being read/mutated anywhere else.
         let mut interrupt_handler = unsafe {
@@ -393,6 +446,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
                 loop_sequences: &(*global_state).loop_sequences,
                 indices: &(*global_state).indices,
                 tx_transfer: None,
+                last_was_loop: None,
             }
         };
 
@@ -474,7 +528,7 @@ where
             channels,
             sequences,
             loop_sequences,
-            loading_zone: true,
+            loading_zone: false,
             top: 0,
             indices,
             transitions,
@@ -838,20 +892,22 @@ where
                     sequences = self.sequences.borrow(cs).borrow_mut();
                     (
                         &self.transitions[..transition_size],
-                        &mut sequences[sequence_id],
+                        sequences[sequence_id].as_mut().unwrap(),
                     )
                 }
                 TransitionType::Loop => {
                     loop_sequences = self.loop_sequences.borrow(cs).borrow_mut();
                     (
                         &self.looping_transitions[..transition_size],
-                        &mut loop_sequences[sequence_id],
+                        loop_sequences[sequence_id].as_mut().unwrap(),
                     )
                 }
             };
 
             // Reset the sequence, otherwise we end up appending and weird thing happen.
-            sequence.data.clear();
+            // Safety: We only mutate this if we can get a reference to it. The interrupt takes
+            // ownership of the sequence when it's in use by the DMA controller.
+            (unsafe { &mut **sequence }).data.clear();
 
             let mut data_index = 0;
             let mut current_level = 0;
@@ -895,7 +951,9 @@ where
                     mask: *pin_states,
                     delay: (next_level - current_level) - 1,
                 };
-                sequence.data.push(transition);
+                // Safety: We only mutate this if we can get a reference to it. The interrupt takes
+                // ownership of the sequence when it's in use by the DMA controller.
+                (unsafe { &mut **sequence }).data.push(transition);
                 current_level = next_level;
             }
         });
@@ -955,9 +1013,14 @@ impl Sequence {
     /// Constructor for a Sequence.
     pub fn new() -> Self {
         let mut data = ArrayVec::default();
-        // Always room for first item.
         data.push(Transition::new());
         Self { data }
+    }
+
+    fn new_for_list() -> Self {
+        let mut this = Self::new();
+        this.data[0].delay = 10;
+        this
     }
 }
 

@@ -1,3 +1,5 @@
+use core::mem::MaybeUninit;
+
 pub const DEFAULT_MIN_PULSE: f32 = 500.0;
 pub const DEFAULT_MID_PULSE: f32 = 1500.0;
 pub const DEFAULT_MAX_PULSE: f32 = 2500.0;
@@ -365,23 +367,19 @@ pub struct Calibration<C> {
 
 impl<C> Calibration<C>
 where
-    C: Default + Clone,
+    C: Default + Clone + CalibrationData,
 {
-    pub fn new() -> Self {
-        Self {
+    /// Returns a new calibration, but only if `C` has 2 or more calibration points.
+    pub fn new() -> Option<Self> {
+        if <C as CalibrationData>::LEN < 2 {
+            return None;
+        }
+
+        Some(Self {
             calibration: Default::default(),
             limit_lower: true,
             limit_upper: true,
-        }
-    }
-}
-
-impl<C> Default for Calibration<C>
-where
-    C: Default + Clone,
-{
-    fn default() -> Self {
-        Self::new()
+        })
     }
 }
 
@@ -390,11 +388,7 @@ where
     C: CalibrationData,
     <C as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
 {
-    pub(crate) fn value_to_pulse(&self, value: f32) -> Option<Point> {
-        if <C as CalibrationData>::LEN < 2 {
-            return None;
-        }
-
+    pub(crate) fn value_to_pulse(&self, value: f32) -> Point {
         let first = self.calibration.first();
         let last = self.calibration.last();
 
@@ -402,22 +396,22 @@ where
         let mut point = if value < first.value {
             // Should the value be limited to the calibration or projected below it?
             if self.limit_lower {
-                Some(first)
+                first
             } else {
                 let second = self.calibration.second();
-                Some(Point {
+                Point {
                     pulse: map_float(value, first.value, second.value, first.pulse, second.pulse),
                     value,
-                })
+                }
             }
             // Is the value above the top-most calibration pair?
         } else if value > last.value {
             // Should the value be limited to the calibration or be projected above it?
             if self.limit_upper {
-                Some(last)
+                last
             } else {
                 let penultimate = self.calibration.penultimate();
-                Some(Point {
+                Point {
                     pulse: map_float(
                         value,
                         penultimate.value,
@@ -426,14 +420,14 @@ where
                         last.pulse,
                     ),
                     value,
-                })
+                }
             }
         } else {
             // The value must be between two calibration points, so iterate through them to find which ones.
-            let mut point = None;
+            let mut point = MaybeUninit::<Point>::uninit();
             for (smaller, larger) in self.calibration.windows() {
                 if value < larger.value {
-                    point = Some(Point {
+                    point.write(Point {
                         pulse: map_float(
                             value,
                             smaller.value,
@@ -446,8 +440,9 @@ where
                     break;
                 }
             }
-            point
-        }?;
+            // Safety: We know the value has to be between the limits, so it is guaranteed to be initialized above.
+            unsafe { point.assume_init() }
+        };
 
         // Clamp the pulse between the hard limits.
         if point.pulse < LOWER_HARD_LIMIT || point.pulse > UPPER_HARD_LIMIT {
@@ -490,7 +485,7 @@ where
             }
         }
 
-        Some(point)
+        point
     }
 
     pub fn pulse_to_value(&self, pulse: f32) -> Option<Point> {

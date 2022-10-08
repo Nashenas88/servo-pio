@@ -14,7 +14,7 @@ pub mod pwm_cluster;
 pub mod servo_cluster;
 pub mod servo_state;
 
-fn alloc_array<T, const LEN: usize>(initializer: impl Fn() -> T) -> [T; LEN] {
+fn initialize_array<T, const LEN: usize>(initializer: impl Fn() -> T) -> [T; LEN] {
     let mut arr: [MaybeUninit<T>; LEN] = unsafe { MaybeUninit::uninit().assume_init() };
     for item in &mut arr {
         item.write(initializer());
@@ -28,7 +28,7 @@ fn alloc_array<T, const LEN: usize>(initializer: impl Fn() -> T) -> [T; LEN] {
     }
 }
 
-fn alloc_array_by_index<T, const LEN: usize>(initializer: impl Fn(usize) -> T) -> [T; LEN] {
+fn initialize_array_by_index<T, const LEN: usize>(initializer: impl Fn(usize) -> T) -> [T; LEN] {
     let mut arr: [MaybeUninit<T>; LEN] = unsafe { MaybeUninit::uninit().assume_init() };
     for (i, item) in arr.iter_mut().enumerate() {
         item.write(initializer(i));
@@ -38,6 +38,23 @@ fn alloc_array_by_index<T, const LEN: usize>(initializer: impl Fn(usize) -> T) -
     unsafe {
         (*(&MaybeUninit::<[MaybeUninit<T>; LEN]>::new(arr) as *const _
             as *const MaybeUninit<[T; LEN]>))
+            .assume_init_read()
+    }
+}
+
+fn initialize_array_from<T, U, const LEN: usize>(
+    other: [T; LEN],
+    initializer: impl Fn(T) -> U,
+) -> [U; LEN] {
+    let mut arr: [MaybeUninit<U>; LEN] = unsafe { MaybeUninit::uninit().assume_init() };
+    for (item, mapped) in arr.iter_mut().zip(other.into_iter()) {
+        item.write(initializer(mapped));
+    }
+
+    // Safety: All entries initialized above. arr and other have the same length.
+    unsafe {
+        (*(&MaybeUninit::<[MaybeUninit<U>; LEN]>::new(arr) as *const _
+            as *const MaybeUninit<[U; LEN]>))
             .assume_init_read()
     }
 }
