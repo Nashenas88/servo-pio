@@ -254,6 +254,11 @@ where
                     .take()
                     .unwrap()
             } else {
+                if let Some(false) = self.last_was_loop {
+                    // Put the sequence back before updating.
+                    self.sequences.borrow(cs).borrow_mut()[indices.read_index] = Some(tx_buf);
+                }
+
                 // Otherwise just use the loop sequences.
                 if let Some(sequence) =
                     self.loop_sequences.borrow(cs).borrow_mut()[indices.read_index].take()
@@ -838,11 +843,12 @@ where
         // Choose the write index based on the read and last written indices (using the above table).
         let write_index = critical_section::with(|cs| {
             let indices = self.indices.borrow(cs).borrow();
-            let mut write_index = (indices.read_index + 1) % NUM_BUFFERS;
+            let write_index = (indices.read_index + 1) % NUM_BUFFERS;
             if write_index == indices.last_written_index {
-                write_index = (write_index + 1) % NUM_BUFFERS;
+                (write_index + 1) % NUM_BUFFERS
+            } else {
+                write_index
             }
-            write_index
         });
 
         self.populate_sequence(

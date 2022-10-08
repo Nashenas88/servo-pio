@@ -68,11 +68,13 @@ fn main() -> ! {
         pins.servo6.into_mode::<FunctionPio0>().into(),
     ];
 
-    let (pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
+    let (mut pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
+    // Use a different pio for the leds because they run at a different
+    // clock speed.
     let (mut pio1, sm10, _, _, _) = pac.PIO1.split(&mut pac.RESETS);
     let dma = pac.DMA.split(&mut pac.RESETS);
 
-    // Configure the Timer peripheral in count-down mode
+    // Configure the Timer peripheral in count-down mode.
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
     let mut count_down = timer.count_down();
 
@@ -84,7 +86,7 @@ fn main() -> ! {
     );
 
     let mut servo_cluster = match build_servo_cluster(
-        pio0,
+        &mut pio0,
         sm0,
         (dma.ch0, dma.ch1),
         servo_pins,
@@ -114,8 +116,10 @@ fn main() -> ! {
     const MIN_PULSE: f32 = 1500.0;
     const MID_PULSE: f32 = 2000.0;
     const MAX_PULSE: f32 = 2500.0;
-    let movement_delay = 1000.millis();
+    let movement_delay = 20.millis();
 
+    // We need to use the indices provided by the cluster because the servo pin
+    // numbers do not line up with the indices in the clusters and PIO.
     let [servo1, servo2, servo3, servo4] = servo_cluster.servos();
 
     servo_cluster.set_pulse(servo1, MAX_PULSE, false);
@@ -124,43 +128,34 @@ fn main() -> ! {
     servo_cluster.set_value(servo4, 35.0, true);
     count_down.start(movement_delay * 5);
 
+    let mut velocity1: f32 = 10.0;
+    let mut velocity2: f32 = 15.0;
+    let mut velocity3: f32 = 25.0;
+    let mut velocity4: f32 = 50.0;
     #[allow(clippy::empty_loop)]
     loop {
-        // let _ = ws.write(brightness(
-        //     Some(RGB8 { r: 0, g: 255, b: 0 }).into_iter(),
-        //     LED_BRIGHTNESS,
-        // ));
-        // // move to 0°
-        // servo_cluster.set_pulse(0, MID_PULSE, true);
-        // count_down.start(movement_delay);
-        // let _ = nb::block!(count_down.wait());
+        let _ = ws.write(brightness(
+            Some(RGB8 { r: 0, g: 255, b: 0 }).into_iter(),
+            LED_BRIGHTNESS,
+        ));
 
-        // // 0° to 90°
-        // let _ = ws.write(brightness(
-        //     Some(RGB8 { r: 0, g: 0, b: 0 }).into_iter(),
-        //     LED_BRIGHTNESS,
-        // ));
-        // servo_cluster.set_pulse(0, MAX_PULSE, true);
-        // count_down.start(movement_delay);
-        // let _ = nb::block!(count_down.wait());
-
-        // // 90° to 0°
-        // let _ = ws.write(brightness(
-        //     Some(RGB8 { r: 0, g: 0, b: 255 }).into_iter(),
-        //     LED_BRIGHTNESS,
-        // ));
-        // servo_cluster.set_pulse(0, MID_PULSE, true);
-        // count_down.start(movement_delay);
-        // let _ = nb::block!(count_down.wait());
-
-        // // 0° to -90°
-        // let _ = ws.write(brightness(
-        //     Some(RGB8 { r: 0, g: 0, b: 0 }).into_iter(),
-        //     LED_BRIGHTNESS,
-        // ));
-        // servo_cluster.set_pulse(0, MIN_PULSE, true);
-        // count_down.start(movement_delay);
-        // let _ = nb::block!(count_down.wait());
+        for (servo, velocity) in [
+            (servo1, &mut velocity1),
+            (servo2, &mut velocity2),
+            (servo3, &mut velocity3),
+            (servo4, &mut velocity4),
+        ] {
+            let mut pulse = servo_cluster.pulse(servo).unwrap();
+            pulse += *velocity;
+            if !(MIN_PULSE..=MAX_PULSE).contains(&pulse) {
+                *velocity *= -1.0;
+                pulse = pulse.min(MAX_PULSE).max(MIN_PULSE);
+            }
+            servo_cluster.set_pulse(servo, pulse, false);
+        }
+        servo_cluster.load();
+        count_down.start(movement_delay);
+        let _ = nb::block!(count_down.wait());
     }
 }
 
@@ -171,7 +166,7 @@ enum BuildError {
 }
 
 fn build_servo_cluster<C1, C2, P, SM>(
-    mut pio: PIO<P>,
+    pio: &mut PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
     dma_channels: (Channel<C1>, Channel<C2>),
     servo_pins: [DynPin; NUM_SERVOS],
@@ -195,7 +190,7 @@ where
         SM,
         NUM_SERVOS,
         NUM_CHANNELS,
-    > = ServoCluster::builder(&mut pio, sm, dma_channels, unsafe { &mut GLOBALS })
+    > = ServoCluster::builder(pio, sm, dma_channels, unsafe { &mut GLOBALS })
         .pins(servo_pins)
         .map_err(BuildError::Gpio)?;
     #[cfg(feature = "debug_pio")]
