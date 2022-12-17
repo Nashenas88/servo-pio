@@ -1,7 +1,7 @@
 use crate::calibration::{Calibration, CalibrationData, NoCustom, Point};
 use crate::pwm_cluster::{GlobalState, GlobalStates, PwmCluster, PwmClusterBuilder};
 use crate::servo_state::{self, ServoState, DEFAULT_FREQUENCY};
-use crate::{initialize_array, initialize_array_by_index, initialize_array_from};
+use crate::{initialize_array_by_index, initialize_array_from, initialize_arrays_from};
 use defmt::Format;
 use fugit::HertzU32;
 use rp2040_hal::clocks::SystemClock;
@@ -68,16 +68,21 @@ pub struct ServoClusterBuilder<
     /// The pwm frequency the servos will share.
     pwm_frequency: Option<f32>,
     /// The calibration for each servo.
-    calibrations: [Option<Calibration<Cal>>; NUM_SERVOS],
+    calibrations: Option<[Calibration<Cal>; NUM_SERVOS]>,
     /// Whether or not to enable a phase shift for each servo. The default is true.
     auto_phase: Option<bool>,
+}
+
+pub struct ServoData<C> {
+    pub pin: DynPin,
+    pub calibration: Calibration<C>,
 }
 
 impl<'a, Cal, C1, C2, P, SM, const NUM_SERVOS: usize, const NUM_CHANNELS: usize>
     ServoClusterBuilder<'a, Cal, C1, C2, P, SM, NUM_SERVOS, NUM_CHANNELS>
 where
     Cal: CalibrationData + Default + Clone,
-    <Cal as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
+    for<'i> <Cal as CalibrationData>::Iterator<'i>: Iterator<Item = (Point, Point)>,
     C1: ChannelIndex,
     C2: ChannelIndex,
     P: PIOExt + FunctionConfig,
@@ -85,8 +90,8 @@ where
     SM: StateMachineIndex,
 {
     /// Set the calibration for each servos.
-    pub fn calibrations(mut self, calibrations: [Option<Calibration<Cal>>; NUM_SERVOS]) -> Self {
-        self.calibrations = calibrations;
+    pub fn calibrations(mut self, calibrations: [Calibration<Cal>; NUM_SERVOS]) -> Self {
+        self.calibrations = Some(calibrations);
         self
     }
 
@@ -142,14 +147,19 @@ where
 
     /// Set the output pins to correspond to the servos. Note that the order they are passed in here
     /// will map how the servos are accessed in [ServoCluster] when specifying the servo index.
-    pub fn pins(mut self, dyn_pins: [DynPin; NUM_SERVOS]) -> Result<Self, GpioError> {
-        for pin in &dyn_pins {
-            if pin.mode() != <Function<P> as PinMode>::DYN {
+    pub fn pins_and_calibration(
+        mut self,
+        pin_data: [ServoData<Cal>; NUM_SERVOS],
+    ) -> Result<Self, GpioError> {
+        for data in &pin_data {
+            if data.pin.mode() != <Function<P> as PinMode>::DYN {
                 return Err(GpioError::InvalidPinMode);
             }
         }
-
+        let (dyn_pins, calibrations) =
+            initialize_arrays_from(pin_data, |data| (data.pin, data.calibration));
         self.pins = Some(dyn_pins);
+        self.calibrations = Some(calibrations);
 
         Ok(self)
     }
@@ -179,8 +189,11 @@ where
         maybe_global_state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
     ) -> Result<ServoCluster<NUM_SERVOS, P, SM, Cal>, ServoClusterBuilderError> {
         let pins = self.pins.ok_or(ServoClusterBuilderError::MissingPins)?;
+        let calibrations = self
+            .calibrations
+            .ok_or(ServoClusterBuilderError::MissingCalibrations)?;
         let (states, servo_phases) = ServoCluster::<NUM_SERVOS, P, SM, _>::create_servo_states(
-            self.calibrations,
+            calibrations,
             self.auto_phase.unwrap_or(true),
         );
         let global_state = self.global_states.get_mut(&mut self.dma_channels, move || {
@@ -258,6 +271,7 @@ pub enum ServoClusterBuilderError {
     MismatchingGlobalState,
     /// The output pins are missing.
     MissingPins,
+    MissingCalibrations,
     /// The side set pin is missing.
     #[cfg(feature = "debug_pio")]
     MissingSideSet,
@@ -266,7 +280,7 @@ pub enum ServoClusterBuilderError {
 impl<'a, const NUM_SERVOS: usize, P, SM, Cal> ServoCluster<NUM_SERVOS, P, SM, Cal>
 where
     Cal: Default + CalibrationData + Clone,
-    <Cal as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
+    for<'i> <Cal as CalibrationData>::Iterator<'i>: Iterator<Item = (Point, Point)>,
     P: PIOExt,
     SM: StateMachineIndex,
 {
@@ -291,23 +305,20 @@ where
             #[cfg(feature = "debug_pio")]
             side_set_pin: None,
             pwm_frequency: None,
-            calibrations: initialize_array(|| None),
+            calibrations: None,
             auto_phase: None,
         }
     }
 
     /// Create the servo states.
     fn create_servo_states(
-        calibrations: [Option<Calibration<Cal>>; NUM_SERVOS],
+        calibrations: [Calibration<Cal>; NUM_SERVOS],
         auto_phase: bool,
     ) -> ([ServoState<Cal>; NUM_SERVOS], [f32; NUM_SERVOS]) {
         (
-            initialize_array_from::<Option<Calibration<Cal>>, ServoState<Cal>, NUM_SERVOS>(
+            initialize_array_from::<Calibration<Cal>, ServoState<Cal>, NUM_SERVOS>(
                 calibrations,
-                move |calibration| match calibration {
-                    Some(calibration) => ServoState::with_calibration(calibration),
-                    None => ServoState::new().unwrap(),
-                },
+                move |calibration| ServoState::with_calibration(calibration),
             ),
             initialize_array_by_index::<f32, NUM_SERVOS>(|i| {
                 if auto_phase {

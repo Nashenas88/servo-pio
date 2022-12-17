@@ -58,3 +58,28 @@ fn initialize_array_from<T, U, const LEN: usize>(
             .assume_init_read()
     }
 }
+
+fn initialize_arrays_from<T, U, V, const LEN: usize>(
+    other: [T; LEN],
+    initializer: impl Fn(T) -> (U, V),
+) -> ([U; LEN], [V; LEN]) {
+    let mut arr1: [MaybeUninit<U>; LEN] = unsafe { MaybeUninit::uninit().assume_init() };
+    let mut arr2: [MaybeUninit<V>; LEN] = unsafe { MaybeUninit::uninit().assume_init() };
+    for ((item1, item2), mapped) in arr1.iter_mut().zip(arr2.iter_mut()).zip(other.into_iter()) {
+        let (v, w) = initializer(mapped);
+        item1.write(v);
+        item2.write(w);
+    }
+
+    // Safety: All entries initialized above. arr and other have the same length.
+    unsafe {
+        (
+            (*(&MaybeUninit::<[MaybeUninit<U>; LEN]>::new(arr1) as *const _
+                as *const MaybeUninit<[U; LEN]>))
+                .assume_init_read(),
+            (*(&MaybeUninit::<[MaybeUninit<V>; LEN]>::new(arr2) as *const _
+                as *const MaybeUninit<[V; LEN]>))
+                .assume_init_read(),
+        )
+    }
+}

@@ -23,34 +23,12 @@ impl Point {
     }
 }
 
-/// Iterator abstraction over the various kinds of calibration data.
-pub enum CalibrationIters<'a, C: 'a> {
-    Angular(AngularCalibrationIter<'a>),
-    Linear(LinearCalibrationIter<'a>),
-    Continuous(ContinuousCalibrationIter<'a>),
-    Custom(C),
-}
-
-impl<'a, C> Iterator for CalibrationIters<'a, C>
-where
-    C: Iterator<Item = (Point, Point)>,
-{
-    type Item = (Point, Point);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            CalibrationIters::Angular(a) => a.next(),
-            CalibrationIters::Linear(l) => l.next(),
-            CalibrationIters::Continuous(c) => c.next(),
-            CalibrationIters::Custom(c) => c.next(),
-        }
-    }
-}
-
 /// A trait to cover any type that can represent calibration data.
 pub trait CalibrationData {
     const LEN: usize;
-    type Custom;
+    type Iterator<'a>
+    where
+        Self: 'a;
     /// The first data point in the calibration data. This might overlap with
     /// [Self::penultimate].
     fn first(&self) -> Point;
@@ -72,7 +50,7 @@ pub trait CalibrationData {
     ///
     /// [`windows`]: slice::windows
     /// [slices]: slice
-    fn windows(&self) -> CalibrationIters<'_, Self::Custom>;
+    fn windows(&self) -> Self::Iterator<'_>;
 }
 
 /// Empty type for the default case where no custom calibration format is being used.
@@ -81,7 +59,7 @@ pub struct NoCustom;
 
 impl CalibrationData for NoCustom {
     const LEN: usize = 0;
-    type Custom = Self;
+    type Iterator<'a> = Self;
     fn first(&self) -> Point {
         Point::new()
     }
@@ -98,8 +76,8 @@ impl CalibrationData for NoCustom {
         Point::new()
     }
 
-    fn windows(&self) -> CalibrationIters<'_, Self::Custom> {
-        CalibrationIters::Custom(NoCustom)
+    fn windows(&self) -> Self::Iterator<'_> {
+        NoCustom
     }
 }
 
@@ -120,6 +98,11 @@ pub struct AngularCalibration {
     mid: Point,
     /// The largest angle the servo can reach.
     max: Point,
+}
+impl AngularCalibration {
+    pub fn new(min: Point, mid: Point, max: Point) -> Self {
+        Self { min, mid, max }
+    }
 }
 
 impl Default for AngularCalibration {
@@ -171,7 +154,7 @@ impl<'a> Iterator for AngularCalibrationIter<'a> {
 
 impl CalibrationData for AngularCalibration {
     const LEN: usize = 3;
-    type Custom = NoCustom;
+    type Iterator<'a> = AngularCalibrationIter<'a>;
 
     fn first(&self) -> Point {
         self.min
@@ -189,8 +172,8 @@ impl CalibrationData for AngularCalibration {
         self.max
     }
 
-    fn windows(&self) -> CalibrationIters<'_, NoCustom> {
-        CalibrationIters::Angular(AngularCalibrationIter::new(self))
+    fn windows(&self) -> Self::Iterator<'_> {
+        AngularCalibrationIter::new(self)
     }
 }
 
@@ -246,7 +229,7 @@ impl<'a> Iterator for LinearCalibrationIter<'a> {
 
 impl CalibrationData for LinearCalibration {
     const LEN: usize = 3;
-    type Custom = ();
+    type Iterator<'a> = LinearCalibrationIter<'a> where Self: 'a;
 
     fn first(&self) -> Point {
         self.min
@@ -264,8 +247,8 @@ impl CalibrationData for LinearCalibration {
         self.max
     }
 
-    fn windows(&self) -> CalibrationIters<'_, ()> {
-        CalibrationIters::Linear(LinearCalibrationIter::new(self))
+    fn windows(&self) -> Self::Iterator<'_> {
+        LinearCalibrationIter::new(self)
     }
 }
 
@@ -327,7 +310,7 @@ impl<'a> Iterator for ContinuousCalibrationIter<'a> {
 
 impl CalibrationData for ContinuousCalibration {
     const LEN: usize = 3;
-    type Custom = ();
+    type Iterator<'a> = ContinuousCalibrationIter<'a> where Self: 'a;
 
     fn first(&self) -> Point {
         self.min
@@ -345,8 +328,8 @@ impl CalibrationData for ContinuousCalibration {
         self.max
     }
 
-    fn windows(&self) -> CalibrationIters<'_, ()> {
-        CalibrationIters::Continuous(ContinuousCalibrationIter::new(self))
+    fn windows(&self) -> Self::Iterator<'_> {
+        ContinuousCalibrationIter::new(self)
     }
 }
 
@@ -358,11 +341,11 @@ pub struct Calibration<C> {
 
     /// Whether or not to limit based on the first calibration point. If true,
     /// the servo can never be set below `calibration.first()`. Defaults to true.
-    pub limit_lower: bool,
+    limit_lower: bool,
 
     /// Whether or not to limit based on the last calibration point. If true,
     /// the servo can never be set above `calibration.last()`. Defaults to true.
-    pub limit_upper: bool,
+    limit_upper: bool,
 }
 
 impl<C> Calibration<C>
@@ -383,10 +366,46 @@ where
     }
 }
 
+pub struct CalibrationBuilder<C> {
+    calibration: C,
+    limit_lower: bool,
+    limit_upper: bool,
+}
+
+impl<C> Calibration<C> {
+    pub fn builder(calibration: C) -> CalibrationBuilder<C> {
+        CalibrationBuilder {
+            calibration,
+            limit_lower: false,
+            limit_upper: false,
+        }
+    }
+}
+
+impl<C> CalibrationBuilder<C> {
+    pub fn limit_lower(mut self) -> Self {
+        self.limit_lower = true;
+        self
+    }
+
+    pub fn limit_upper(mut self) -> Self {
+        self.limit_upper = true;
+        self
+    }
+
+    pub fn build(self) -> Calibration<C> {
+        Calibration {
+            calibration: self.calibration,
+            limit_lower: self.limit_lower,
+            limit_upper: self.limit_upper,
+        }
+    }
+}
+
 impl<C> Calibration<C>
 where
     C: CalibrationData,
-    <C as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
+    for<'a> <C as CalibrationData>::Iterator<'a>: Iterator<Item = (Point, Point)>,
 {
     pub(crate) fn value_to_pulse(&self, value: f32) -> Point {
         let first = self.calibration.first();

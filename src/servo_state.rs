@@ -35,7 +35,7 @@ where
 impl<C> ServoState<C>
 where
     C: CalibrationData,
-    <C as CalibrationData>::Custom: Iterator<Item = (Point, Point)>,
+    for<'a> <C as CalibrationData>::Iterator<'a>: Iterator<Item = (Point, Point)>,
 {
     /// Construct a `ServoState` based on some [Calibration].
     pub fn with_calibration(calibration: Calibration<C>) -> Self {
