@@ -465,7 +465,7 @@ where
 
         // Clamp the pulse between the hard limits.
         if point.pulse < LOWER_HARD_LIMIT || point.pulse > UPPER_HARD_LIMIT {
-            point.pulse = point.pulse.max(LOWER_HARD_LIMIT).min(UPPER_HARD_LIMIT);
+            point.pulse = point.pulse.clamp(LOWER_HARD_LIMIT, UPPER_HARD_LIMIT);
 
             // Is the pulse below the bottom-most calibration pair?
             if point.pulse < first.pulse {
@@ -513,7 +513,7 @@ where
         }
 
         // Clamp the pulse between the hard limits
-        let mut pulse_out = pulse.max(LOWER_HARD_LIMIT).min(UPPER_HARD_LIMIT);
+        let mut pulse_out = pulse.clamp(LOWER_HARD_LIMIT, UPPER_HARD_LIMIT);
         let mut value_out = 0.0;
 
         // Is the pulse below the bottom most calibration pair?

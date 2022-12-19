@@ -385,7 +385,7 @@ where
     /// Set the phase for a particular servo. If `load` is true, immeditely update the servo pwm
     /// signal.
     pub fn set_phase(&mut self, servo: ServoIdx, phase: f32, load: bool) {
-        self.servo_phases[servo.0 as usize] = phase.max(0.0).min(1.0);
+        self.servo_phases[servo.0 as usize] = phase.clamp(0.0, 1.0);
         // servo count already checked above
         let _ = self.pwms.set_channel_offset(
             servo.0,

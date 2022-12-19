@@ -547,7 +547,7 @@ where
 
         // Check the provided frequency is valid
         if (freq >= 0.01) && (freq <= (source_hz >> 1) as f32) {
-            let mut div256_top = (((source_hz as u64) << 8) as f32 / freq) as u64;
+            let mut div256_top = ((source_hz << 8) as f32 / freq) as u64;
             let mut top: u64 = 1;
 
             loop {

@@ -149,7 +149,7 @@ fn main() -> ! {
             pulse += *velocity;
             if !(MIN_PULSE..=MAX_PULSE).contains(&pulse) {
                 *velocity *= -1.0;
-                pulse = pulse.min(MAX_PULSE).max(MIN_PULSE);
+                pulse = pulse.clamp(MIN_PULSE, MAX_PULSE);
             }
             servo_cluster.set_pulse(servo, pulse, false);
         }
