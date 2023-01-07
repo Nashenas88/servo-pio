@@ -12,13 +12,15 @@ use fugit::ExtU64;
 use panic_probe as _;
 use pimoroni_servo2040::hal::clocks::SystemClock;
 use pimoroni_servo2040::hal::dma::{Channel, ChannelIndex, DMAExt, CH0, CH1};
-use pimoroni_servo2040::hal::gpio::{DynPin, Error as GpioError, FunctionConfig, FunctionPio0};
+use pimoroni_servo2040::hal::gpio::{Error as GpioError, FunctionConfig, FunctionPio0};
 use pimoroni_servo2040::hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO, SM0};
 use pimoroni_servo2040::hal::{self, pac, Clock};
 use pimoroni_servo2040::pac::{interrupt, PIO0};
-use servo_pio::calibration::AngularCalibration;
+use servo_pio::calibration::{AngularCalibration, Calibration};
 use servo_pio::pwm_cluster::{dma_interrupt, GlobalState, GlobalStates, Handler};
-use servo_pio::servo_cluster::{ServoCluster, ServoClusterBuilder, ServoClusterBuilderError};
+use servo_pio::servo_cluster::{
+    ServoCluster, ServoClusterBuilder, ServoClusterBuilderError, ServoData,
+};
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812Direct;
 
@@ -62,10 +64,34 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
     let servo_pins: [_; NUM_SERVOS] = [
-        pins.servo3.into_mode::<FunctionPio0>().into(),
-        pins.servo4.into_mode::<FunctionPio0>().into(),
-        pins.servo5.into_mode::<FunctionPio0>().into(),
-        pins.servo6.into_mode::<FunctionPio0>().into(),
+        ServoData {
+            pin: pins.servo3.into_mode::<FunctionPio0>().into(),
+            calibration: Calibration::builder(AngularCalibration::default())
+                .limit_lower()
+                .limit_upper()
+                .build(),
+        },
+        ServoData {
+            pin: pins.servo4.into_mode::<FunctionPio0>().into(),
+            calibration: Calibration::builder(AngularCalibration::default())
+                .limit_lower()
+                .limit_upper()
+                .build(),
+        },
+        ServoData {
+            pin: pins.servo5.into_mode::<FunctionPio0>().into(),
+            calibration: Calibration::builder(AngularCalibration::default())
+                .limit_lower()
+                .limit_upper()
+                .build(),
+        },
+        ServoData {
+            pin: pins.servo6.into_mode::<FunctionPio0>().into(),
+            calibration: Calibration::builder(AngularCalibration::default())
+                .limit_lower()
+                .limit_upper()
+                .build(),
+        },
     ];
 
     let (mut pio0, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
@@ -169,7 +195,7 @@ fn build_servo_cluster<C1, C2, P, SM>(
     pio: &mut PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
     dma_channels: (Channel<C1>, Channel<C2>),
-    servo_pins: [DynPin; NUM_SERVOS],
+    servo_data: [ServoData<AngularCalibration>; NUM_SERVOS],
     #[cfg(feature = "debug_pio")] side_set_pin: DynPin,
     system_clock: SystemClock,
     state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
@@ -190,9 +216,14 @@ where
         SM,
         NUM_SERVOS,
         NUM_CHANNELS,
-    > = ServoCluster::builder(pio, sm, dma_channels, unsafe { &mut GLOBALS })
-        .pins(servo_pins)
-        .map_err(BuildError::Gpio)?;
+    > = ServoCluster::<NUM_SERVOS, P, SM, AngularCalibration>::builder(
+        pio,
+        sm,
+        dma_channels,
+        unsafe { &mut GLOBALS },
+    )
+    .pins_and_calibration(servo_data)
+    .map_err(BuildError::Gpio)?;
     #[cfg(feature = "debug_pio")]
     {
         builder = builder

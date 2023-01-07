@@ -8,10 +8,11 @@ use fugit::HertzU32;
 use pio::Program;
 use pio_proc::pio_file;
 use rp2040_hal::clocks::SystemClock;
-use rp2040_hal::dma::{
-    Channel, ChannelIndex, DoubleBuffering, DoubleBufferingConfig, ReadNext, ReadTarget,
-    SingleBuffering, SingleChannel,
+use rp2040_hal::dma::double_buffer::{
+    Config as DoubleBufferingConfig, ReadNext, Transfer as DoubleBuffering,
 };
+use rp2040_hal::dma::single_buffer::Transfer as SingleBuffering;
+use rp2040_hal::dma::{Channel, ChannelIndex, ReadTarget, SingleChannel};
 use rp2040_hal::gpio::DynPin;
 use rp2040_hal::pio::{
     PIOExt, PinDir, Running, StateMachine, StateMachineIndex, Tx, UninitStateMachine, PIO,
