@@ -183,30 +183,6 @@ fn DMA_IRQ_0() {
 }
 ```
 
-## Contributing
-
-Contributions are what make the open source community such an amazing place to be learn, inspire, and create. Any contributions you make are **greatly appreciated**.
-
-The steps are:
-
-1. Fork the Project by clicking the 'Fork' button at the top of the page.
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Make some changes to the code or documentation.
-4. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-5. Push to the Feature Branch (`git push origin feature/AmazingFeature`)
-6. Create a [New Pull Request](https://github.com/nashenas88/servo-pio/pulls)
-7. An admin will review the Pull Request and discuss any changes that may be required.
-8. Once everyone is happy, the Pull Request can be merged by an admin, and your work is part of our project!
-
-## Code of Conduct
-
-Contribution to this crate is organized under the terms of the [Rust Code of
-Conduct][CoC], and the maintainer of this crate, [Paul D. Faria], promises
-to intervene to uphold that code of conduct.
-
-[CoC]: CODE_OF_CONDUCT.md
-[Paul D. Faria]: https://github.com/nashenas88
-
 ## License
 
 The contents of this repository are dual-licensed under the _MIT OR Apache
@@ -218,9 +194,6 @@ Note that this code is a derivative of https://github.com/pimoroni/pimoroni-pico
 servo_cluster and pwm_cluster drivers. pwm.pio comes directly from pwm_cluster.pio in Pimoroni's
 project. Their cose is licensed under the _MIT_ License. See [`Pimoroni.MIT`] for more information on
 their license.
-
-Any submissions to this project (e.g. as Pull Requests) must be made available
-under these terms.
 
 [`MIT`]: ./MIT
 [`APACHE2.0`]: ./APACHE2.0

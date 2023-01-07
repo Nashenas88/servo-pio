@@ -1,7 +1,12 @@
 [package]
 edition = "2021"
 name = "servo-pio"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
+authors = ["Paul Daniel Faria <Nashenas88@users.noreply.github.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Nashenas88/servo-pio"
+description = "Control servo motors using the RP2040's PIO peripheral."
+readme = "README.cratesio.md"
 
 [dependencies]
 cortex-m = "0.7"
@@ -11,7 +16,7 @@ fugit = "0.3.6"
 pio = "0.2.1"
 pio-proc = "0.2.1"
 # We need the unpublished DMA APIs.
-rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", rev = "33dd1c6f6abcdccb838a38bbf9fe409b211990d7" }
+rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", rev = "33dd1c6f6abcdccb838a38bbf9fe409b211990d7", version = "0.7.0" }
 arrayvec = { version = "0.7.2", default-features = false }
 
 [features]
