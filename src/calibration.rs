@@ -334,7 +334,6 @@ impl CalibrationData for ContinuousCalibration {
 }
 
 /// Calibration data for some type implementing [CalibrationData].
-#[derive(Clone)]
 pub struct Calibration<C> {
     /// The specific calibration data.
     calibration: C,
@@ -347,6 +346,21 @@ pub struct Calibration<C> {
     /// the servo can never be set above `calibration.last()`. Defaults to true.
     limit_upper: bool,
 }
+
+impl<C> Clone for Calibration<C>
+where
+    C: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            calibration: self.calibration.clone(),
+            limit_lower: self.limit_lower,
+            limit_upper: self.limit_upper,
+        }
+    }
+}
+
+impl<C> Copy for Calibration<C> where C: Copy {}
 
 impl<C> Calibration<C>
 where
@@ -366,6 +380,7 @@ where
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct CalibrationBuilder<C> {
     calibration: C,
     limit_lower: bool,
@@ -373,7 +388,7 @@ pub struct CalibrationBuilder<C> {
 }
 
 impl<C> Calibration<C> {
-    pub fn builder(calibration: C) -> CalibrationBuilder<C> {
+    pub const fn builder(calibration: C) -> CalibrationBuilder<C> {
         CalibrationBuilder {
             calibration,
             limit_lower: false,
@@ -383,12 +398,12 @@ impl<C> Calibration<C> {
 }
 
 impl<C> CalibrationBuilder<C> {
-    pub fn limit_lower(mut self) -> Self {
+    pub const fn limit_lower(mut self) -> Self {
         self.limit_lower = true;
         self
     }
 
-    pub fn limit_upper(mut self) -> Self {
+    pub const fn limit_upper(mut self) -> Self {
         self.limit_upper = true;
         self
     }
