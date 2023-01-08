@@ -11,7 +11,6 @@ use rp2040_hal::clocks::SystemClock;
 use rp2040_hal::dma::double_buffer::{
     Config as DoubleBufferingConfig, ReadNext, Transfer as DoubleBuffering,
 };
-use rp2040_hal::dma::single_buffer::Transfer as SingleBuffering;
 use rp2040_hal::dma::{Channel, ChannelIndex, ReadTarget, SingleChannel};
 use rp2040_hal::gpio::DynPin;
 use rp2040_hal::pio::{
@@ -22,8 +21,6 @@ use rp2040_hal::{self, Clock};
 use crate::initialize_array;
 
 type PinData = &'static mut Sequence;
-#[allow(dead_code)]
-type SingleTxTransfer<C, P, SM> = SingleBuffering<Channel<C>, PinData, Tx<(P, SM)>>;
 type TxTransfer<C1, C2, P, SM> =
     DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ReadNext<PinData>>;
 type WaitingTxTransfer<C1, C2, P, SM> =
@@ -302,7 +299,7 @@ where
 /// A type to build a [PwmCluster]
 pub struct PwmClusterBuilder<const NUM_PINS: usize> {
     pin_mask: u32,
-    #[cfg(deature = "debug_pio")]
+    #[cfg(feature = "debug_pio")]
     side_set_pin: u8,
     channel_to_pin_map: [u8; NUM_PINS],
 }
@@ -312,7 +309,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     pub fn new() -> Self {
         Self {
             pin_mask: 0,
-            #[cfg(deature = "debug_pio")]
+            #[cfg(feature = "debug_pio")]
             side_set_pin: 0,
             channel_to_pin_map: [0; NUM_PINS],
         }
@@ -425,7 +422,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
             {
                 builder = builder.out_pins(0, 32)
             }
-            #[cfg(deature = "debug_pio")]
+            #[cfg(feature = "debug_pio")]
             {
                 builder = builder
                     .out_pins(0, self.side_set_pin)
@@ -433,15 +430,19 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
             }
             builder.clock_divisor_fixed_point(int, frac).build(sm)
         };
-        sm.set_pindirs({
-            #[allow(unused_mut)]
-            let mut iter = servo_pins.into_iter().map(|pin| pin.id().num);
+        {
+            let iter_a = servo_pins.into_iter().map(|pin| pin.id().num);
+            let iter;
+            #[cfg(not(feature = "debug_pio"))]
+            {
+                iter = iter_a;
+            }
             #[cfg(feature = "debug_pio")]
             {
-                iter = iter.chain(Some(self.side_set_pin).into_iter())
+                iter = iter_a.chain(Some(self.side_set_pin).into_iter());
             }
-            iter.map(|id| (id, PinDir::Output))
-        });
+            sm.set_pindirs(iter.map(|id| (id, PinDir::Output)));
+        }
 
         let sequence = Sequence::new_for_list();
 
