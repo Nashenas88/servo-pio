@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "servo-pio"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Paul Daniel Faria <Nashenas88@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nashenas88/servo-pio"
@@ -15,7 +15,7 @@ defmt = "0.3"
 fugit = "0.3.6"
 pio = "0.2.1"
 pio-proc = "0.2.1"
-rp2040-hal = "0.8.0"
+rp2040-hal = "0.9.0"
 arrayvec = { version = "0.7.2", default-features = false }
 
 [features]
@@ -28,9 +28,9 @@ defmt-rtt = "0.4"
 embedded-hal = { version = "0.2.5", features = ["unproven"] }
 nb = "1.0.0"
 panic-probe = "0.3.0"
-pimoroni-servo2040 = "0.3.0"
+pimoroni-servo2040 = "0.4.0"
 smart-leds = "0.3.0"
-ws2812-pio = "0.6.0"
+ws2812-pio = "0.7.0"
 
 # cargo build/run
 [profile.dev]

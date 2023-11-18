@@ -2,7 +2,7 @@
 #![no_main]
 
 use defmt_rtt as _;
-use hal::gpio::{AnyPin, FunctionPio0, PinId};
+use hal::gpio::{Function, FunctionPio0, Pin, PinId, PullNone, PullType};
 use hal::pio::{PIOExt, PinDir};
 use hal::Clock;
 use panic_probe as _;
@@ -35,9 +35,9 @@ fn main() -> ! {
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
-    let servo7 = pins.servo7.into_mode::<FunctionPio0>();
-    let servo4 = pins.servo4.into_mode::<FunctionPio0>();
-    let scl = pins.scl.into_mode::<FunctionPio0>();
+    let servo7 = pins.servo7.reconfigure::<FunctionPio0, PullNone>();
+    let servo4 = pins.servo4.reconfigure::<FunctionPio0, PullNone>();
+    let scl = pins.scl.reconfigure::<FunctionPio0, PullNone>();
 
     let (mut pio, sm, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
     let pwm_program = pio_file!("./src/pwm.pio", select_program("debug_pwm_cluster"));
@@ -102,9 +102,11 @@ struct Transition {
     delay: u32,
 }
 
-fn id<P>(_pin: &P) -> u8
+fn id<I, F, P>(pin: &Pin<I, F, P>) -> u8
 where
-    P: AnyPin,
+    I: PinId,
+    F: Function,
+    P: PullType,
 {
-    <<P as AnyPin>::Id as PinId>::DYN.num
+    pin.id().num
 }

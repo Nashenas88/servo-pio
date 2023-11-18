@@ -12,7 +12,7 @@ use rp2040_hal::dma::double_buffer::{
     Config as DoubleBufferingConfig, ReadNext, Transfer as DoubleBuffering,
 };
 use rp2040_hal::dma::{Channel, ChannelIndex, ReadTarget, SingleChannel};
-use rp2040_hal::gpio::DynPin;
+use rp2040_hal::gpio::{DynPinId, Function, Pin, PullNone};
 use rp2040_hal::pio::{
     PIOExt, PinDir, Running, StateMachine, StateMachineIndex, Tx, UninitStateMachine, PIO,
 };
@@ -20,6 +20,7 @@ use rp2040_hal::{self, Clock};
 
 use crate::initialize_array;
 
+pub type DynPin<F> = Pin<DynPinId, F, PullNone>;
 type PinData = &'static mut Sequence;
 type TxTransfer<C1, C2, P, SM> =
     DoubleBuffering<Channel<C1>, Channel<C2>, PinData, Tx<(P, SM)>, ReadNext<PinData>>;
@@ -316,7 +317,10 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     }
 
     /// Set the pin_base for this cluster. NUM_PINS will be used to determine the pin count.
-    pub fn pin_base(mut self, base_pin: DynPin) -> Self {
+    pub fn pin_base<F>(mut self, base_pin: DynPin<F>) -> Self
+    where
+        F: Function,
+    {
         let base_pin = base_pin.id().num;
         for (i, pin_map) in self.channel_to_pin_map.iter_mut().enumerate() {
             let pin_id = base_pin + i as u8;
@@ -327,7 +331,10 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     }
 
     /// Set the pins directly from the `pins` parameter.
-    pub fn pins(mut self, pins: &[DynPin; NUM_PINS]) -> Self {
+    pub fn pins<F>(mut self, pins: &[DynPin<F>; NUM_PINS]) -> Self
+    where
+        F: Function,
+    {
         for (pin, pin_map) in pins.iter().zip(self.channel_to_pin_map.iter_mut()) {
             let pin_id = pin.id().num;
             self.pin_mask |= 1 << pin_id;
@@ -393,9 +400,9 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     /// # Safety
     /// Caller must ensure that global_state is not being read/mutated anywhere else.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn build<C1, C2, P, SM>(
+    pub unsafe fn build<C1, C2, P, SM, F>(
         self,
-        servo_pins: [DynPin; NUM_PINS],
+        servo_pins: [DynPin<F>; NUM_PINS],
         pio: &mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
         mut dma_channels: (Channel<C1>, Channel<C2>),
@@ -405,7 +412,8 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     where
         C1: ChannelIndex,
         C2: ChannelIndex,
-        P: PIOExt,
+        P: PIOExt<PinFunction = F>,
+        F: Function,
         SM: StateMachineIndex,
     {
         let program = Self::pio_program();
@@ -458,8 +466,8 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
         };
 
         let tx_buf = singleton!(: Sequence = sequence.clone()).unwrap();
-        dma_channels.0.listen_irq0();
-        dma_channels.1.listen_irq0();
+        dma_channels.0.enable_irq0();
+        dma_channels.1.enable_irq0();
         let tx = DoubleBufferingConfig::new(dma_channels, tx_buf, tx).start();
         let tx_buf = singleton!(: Sequence = sequence).unwrap();
         interrupt_handler.next_dma_sequence(tx_buf, tx);
@@ -484,6 +492,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     /// Get PIO program data.
     #[cfg(feature = "debug_pio")]
     fn pio_program() -> Program<32> {
+        #[allow(non_snake_case)]
         let pwm_program = pio_file!("./src/pwm.pio", select_program("debug_pwm_cluster"));
         pwm_program.program
     }
@@ -491,6 +500,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     /// Get PIO program data.
     #[cfg(not(feature = "debug_pio"))]
     fn pio_program() -> Program<32> {
+        #[allow(non_snake_case)]
         let pwm_program = pio_file!("./src/pwm.pio", select_program("pwm_cluster"));
         pwm_program.program
     }
@@ -1039,7 +1049,7 @@ impl Default for Sequence {
 }
 
 // ReadTarget allows Sequence to be used directly by the DMA.
-impl ReadTarget for &mut Sequence {
+unsafe impl ReadTarget for &mut Sequence {
     type ReceivedWord = u32;
 
     fn rx_treq() -> Option<u8> {

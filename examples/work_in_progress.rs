@@ -9,10 +9,13 @@ use defmt::Format;
 use defmt_rtt as _;
 use embedded_hal::timer::CountDown;
 use fugit::ExtU64;
+#[cfg(feature = "debug_pio")]
+use hal::gpio::{DynPinId, Pin};
+use hal::gpio::{FunctionPio1, PullNone};
 use panic_probe as _;
 use pimoroni_servo2040::hal::clocks::SystemClock;
 use pimoroni_servo2040::hal::dma::{Channel, ChannelIndex, DMAExt, CH0, CH1};
-use pimoroni_servo2040::hal::gpio::{Error as GpioError, FunctionConfig, FunctionPio0};
+use pimoroni_servo2040::hal::gpio::{Error as GpioError, FunctionPio0};
 use pimoroni_servo2040::hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO, SM0};
 use pimoroni_servo2040::hal::{self, pac, Clock};
 use pimoroni_servo2040::pac::{interrupt, PIO0};
@@ -65,28 +68,40 @@ fn main() -> ! {
     );
     let servo_pins: [_; NUM_SERVOS] = [
         ServoData {
-            pin: pins.servo3.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo3
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
                 .build(),
         },
         ServoData {
-            pin: pins.servo4.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo4
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
                 .build(),
         },
         ServoData {
-            pin: pins.servo5.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo5
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
                 .build(),
         },
         ServoData {
-            pin: pins.servo6.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo6
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
@@ -101,11 +116,11 @@ fn main() -> ! {
     let dma = pac.DMA.split(&mut pac.RESETS);
 
     // Configure the Timer peripheral in count-down mode.
-    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
+    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let mut count_down = timer.count_down();
 
     let mut ws = Ws2812Direct::new(
-        pins.led_data.into_mode(),
+        pins.led_data.reconfigure::<FunctionPio1, PullNone>(),
         &mut pio1,
         sm10,
         clocks.peripheral_clock.freq(),
@@ -117,7 +132,9 @@ fn main() -> ! {
         (dma.ch0, dma.ch1),
         servo_pins,
         #[cfg(feature = "debug_pio")]
-        pins.scl.into_mode::<FunctionPio0>().into(),
+        pins.scl
+            .reconfigure::<FunctionPio0, PullNone>()
+            .into_dyn_pin(),
         clocks.system_clock,
         unsafe { &mut STATE1 },
     ) {
@@ -195,15 +212,15 @@ fn build_servo_cluster<C1, C2, P, SM>(
     pio: &mut PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
     dma_channels: (Channel<C1>, Channel<C2>),
-    servo_data: [ServoData<AngularCalibration>; NUM_SERVOS],
-    #[cfg(feature = "debug_pio")] side_set_pin: DynPin,
+    servo_data: [ServoData<AngularCalibration, FunctionPio0>; NUM_SERVOS],
+    #[cfg(feature = "debug_pio")] side_set_pin: Pin<DynPinId, FunctionPio0, PullNone>,
     system_clock: SystemClock,
     state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
 ) -> Result<ServoCluster<NUM_SERVOS, P, SM, AngularCalibration>, BuildError>
 where
     C1: ChannelIndex,
     C2: ChannelIndex,
-    P: PIOExt + FunctionConfig,
+    P: PIOExt<PinFunction = FunctionPio0>,
     SM: StateMachineIndex,
 {
     #[allow(unused_mut)]
@@ -214,6 +231,7 @@ where
         C2,
         P,
         SM,
+        FunctionPio0,
         NUM_SERVOS,
         NUM_CHANNELS,
     > = ServoCluster::<NUM_SERVOS, P, SM, AngularCalibration>::builder(

@@ -9,6 +9,7 @@ const UPPER_HARD_LIMIT: f32 = 2600.0;
 
 /// Simple type to manage corresponding pulse/value pairs.
 #[derive(Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Point {
     pub pulse: f32,
     pub value: f32,
@@ -55,6 +56,7 @@ pub trait CalibrationData {
 
 /// Empty type for the default case where no custom calibration format is being used.
 #[derive(Default, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NoCustom;
 
 impl CalibrationData for NoCustom {
@@ -91,6 +93,7 @@ impl Iterator for NoCustom {
 
 /// Calibration data best suited for angular servos.
 #[derive(Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct AngularCalibration {
     /// The lowest angle the servo can reach.
     min: Point,
@@ -102,6 +105,30 @@ pub struct AngularCalibration {
 impl AngularCalibration {
     pub fn new(min: Point, mid: Point, max: Point) -> Self {
         Self { min, mid, max }
+    }
+
+    pub fn set_min_pulse(&mut self, pulse: f32) {
+        self.min.pulse = pulse;
+    }
+
+    pub fn min_pulse(&self) -> f32 {
+        self.min.pulse
+    }
+
+    pub fn set_mid_pulse(&mut self, pulse: f32) {
+        self.mid.pulse = pulse;
+    }
+
+    pub fn mid_pulse(&self) -> f32 {
+        self.mid.pulse
+    }
+
+    pub fn set_max_pulse(&mut self, pulse: f32) {
+        self.max.pulse = pulse;
+    }
+
+    pub fn max_pulse(&self) -> f32 {
+        self.max.pulse
     }
 }
 
@@ -178,6 +205,7 @@ impl CalibrationData for AngularCalibration {
 }
 
 /// Calibration data best suited for linear servos.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct LinearCalibration {
     /// The shortest length the servo can move to.
     min: Point,
@@ -253,6 +281,7 @@ impl CalibrationData for LinearCalibration {
 }
 
 /// Calibration data best suited for contiuous rotation servos.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ContinuousCalibration {
     /// The value representing max-speed negative rotation.
     min: Point,
@@ -334,17 +363,18 @@ impl CalibrationData for ContinuousCalibration {
 }
 
 /// Calibration data for some type implementing [CalibrationData].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Calibration<C> {
     /// The specific calibration data.
     calibration: C,
 
     /// Whether or not to limit based on the first calibration point. If true,
     /// the servo can never be set below `calibration.first()`. Defaults to true.
-    limit_lower: bool,
+    pub limit_lower: bool,
 
     /// Whether or not to limit based on the last calibration point. If true,
     /// the servo can never be set above `calibration.last()`. Defaults to true.
-    limit_upper: bool,
+    pub limit_upper: bool,
 }
 
 impl<C> Clone for Calibration<C>
@@ -422,7 +452,15 @@ where
     C: CalibrationData,
     for<'a> <C as CalibrationData>::Iterator<'a>: Iterator<Item = (Point, Point)>,
 {
-    pub(crate) fn value_to_pulse(&self, value: f32) -> Point {
+    pub fn inner_mut(&mut self) -> &mut C {
+        &mut self.calibration
+    }
+
+    pub fn inner(&self) -> &C {
+        &self.calibration
+    }
+
+    pub fn value_to_pulse(&self, value: f32) -> Point {
         let first = self.calibration.first();
         let last = self.calibration.last();
 

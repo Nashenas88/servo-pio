@@ -1,12 +1,12 @@
 use crate::calibration::{Calibration, CalibrationData, NoCustom, Point};
-use crate::pwm_cluster::{GlobalState, GlobalStates, PwmCluster, PwmClusterBuilder};
+use crate::pwm_cluster::{DynPin, GlobalState, GlobalStates, PwmCluster, PwmClusterBuilder};
 use crate::servo_state::{self, ServoState, DEFAULT_FREQUENCY};
 use crate::{initialize_array_by_index, initialize_array_from, initialize_arrays_from};
 use defmt::Format;
 use fugit::HertzU32;
 use rp2040_hal::clocks::SystemClock;
 use rp2040_hal::dma::{Channel, ChannelIndex};
-use rp2040_hal::gpio::{DynPin, Error as GpioError, Function, FunctionConfig, PinMode};
+use rp2040_hal::gpio::Function;
 use rp2040_hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO};
 use rp2040_hal::Clock;
 
@@ -44,12 +44,14 @@ pub struct ServoClusterBuilder<
     C2,
     P,
     SM,
+    F,
     const NUM_SERVOS: usize,
     const NUM_CHANNELS: usize,
 > where
     C1: ChannelIndex + 'static,
     C2: ChannelIndex + 'static,
     P: PIOExt + 'static,
+    F: Function,
     SM: StateMachineIndex + 'static,
 {
     /// The [PIO] instance to use.
@@ -61,7 +63,7 @@ pub struct ServoClusterBuilder<
     /// The [GlobalStates] to manage the interrupt handler for this cluster.
     global_states: &'static mut GlobalStates<NUM_CHANNELS>,
     /// The output pins this cluster will use to communicate with the servos.
-    pins: Option<[DynPin; NUM_SERVOS]>,
+    pins: Option<[DynPin<F>; NUM_SERVOS]>,
     /// The side set pin used for debugging the pio program.
     #[cfg(feature = "debug_pio")]
     side_set_pin: Option<DynPin>,
@@ -73,20 +75,23 @@ pub struct ServoClusterBuilder<
     auto_phase: Option<bool>,
 }
 
-pub struct ServoData<C> {
-    pub pin: DynPin,
+pub struct ServoData<C, F>
+where
+    F: Function,
+{
+    pub pin: DynPin<F>,
     pub calibration: Calibration<C>,
 }
 
-impl<'a, Cal, C1, C2, P, SM, const NUM_SERVOS: usize, const NUM_CHANNELS: usize>
-    ServoClusterBuilder<'a, Cal, C1, C2, P, SM, NUM_SERVOS, NUM_CHANNELS>
+impl<'a, Cal, C1, C2, P, SM, F, const NUM_SERVOS: usize, const NUM_CHANNELS: usize>
+    ServoClusterBuilder<'a, Cal, C1, C2, P, SM, F, NUM_SERVOS, NUM_CHANNELS>
 where
     Cal: CalibrationData + Default + Clone,
     for<'i> <Cal as CalibrationData>::Iterator<'i>: Iterator<Item = (Point, Point)>,
     C1: ChannelIndex,
     C2: ChannelIndex,
-    P: PIOExt + FunctionConfig,
-    Function<P>: PinMode,
+    P: PIOExt<PinFunction = F>,
+    F: Function,
     SM: StateMachineIndex,
 {
     /// Set the calibration for each servos.
@@ -147,32 +152,19 @@ where
 
     /// Set the output pins to correspond to the servos. Note that the order they are passed in here
     /// will map how the servos are accessed in [ServoCluster] when specifying the servo index.
-    pub fn pins_and_calibration(
-        mut self,
-        pin_data: [ServoData<Cal>; NUM_SERVOS],
-    ) -> Result<Self, GpioError> {
-        for data in &pin_data {
-            if data.pin.mode() != <Function<P> as PinMode>::DYN {
-                return Err(GpioError::InvalidPinMode);
-            }
-        }
+    pub fn pins_and_calibration(mut self, pin_data: [ServoData<Cal, F>; NUM_SERVOS]) -> Self {
         let (dyn_pins, calibrations) =
             initialize_arrays_from(pin_data, |data| (data.pin, data.calibration));
         self.pins = Some(dyn_pins);
         self.calibrations = Some(calibrations);
-
-        Ok(self)
+        self
     }
 
     /// Set the sideset pin to use for debugging the PIO program.
     #[cfg(feature = "debug_pio")]
-    pub fn side_set_pin(mut self, side_set_pin: DynPin) -> Result<Self, GpioError> {
-        if side_set_pin.mode() == <Function<P> as PinMode>::DYN {
-            self.side_set_pin = Some(side_set_pin);
-            Ok(self)
-        } else {
-            Err(GpioError::InvalidPinMode)
-        }
+    pub fn side_set_pin(mut self, side_set_pin: DynPin<F>) -> Self {
+        self.side_set_pin = Some(side_set_pin);
+        self
     }
 
     /// Set the frequency for the pwm signal for the cluster.
@@ -277,11 +269,12 @@ pub enum ServoClusterBuilderError {
     MissingSideSet,
 }
 
-impl<'a, const NUM_SERVOS: usize, P, SM, Cal> ServoCluster<NUM_SERVOS, P, SM, Cal>
+impl<'a, const NUM_SERVOS: usize, P, SM, Cal, F> ServoCluster<NUM_SERVOS, P, SM, Cal>
 where
     Cal: Default + CalibrationData + Clone,
     for<'i> <Cal as CalibrationData>::Iterator<'i>: Iterator<Item = (Point, Point)>,
-    P: PIOExt,
+    P: PIOExt<PinFunction = F>,
+    F: Function,
     SM: StateMachineIndex,
 {
     /// Get a builder to help construct a `ServoCluster`.
@@ -290,7 +283,7 @@ where
         sm: UninitStateMachine<(P, SM)>,
         dma_channels: (Channel<C1>, Channel<C2>),
         global_states: &'static mut GlobalStates<NUM_CHANNELS>,
-    ) -> ServoClusterBuilder<'a, Cal, C1, C2, P, SM, NUM_SERVOS, NUM_CHANNELS>
+    ) -> ServoClusterBuilder<'a, Cal, C1, C2, P, SM, F, NUM_SERVOS, NUM_CHANNELS>
     where
         C1: ChannelIndex + 'static,
         C2: ChannelIndex + 'static,
