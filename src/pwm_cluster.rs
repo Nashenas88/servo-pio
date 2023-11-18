@@ -1,6 +1,7 @@
 use arrayvec::ArrayVec;
 use core::any::{Any, TypeId};
 use core::cell::RefCell;
+use core::marker::PhantomData;
 use cortex_m::singleton;
 use critical_section::Mutex;
 use defmt::Format;
@@ -298,14 +299,15 @@ where
 }
 
 /// A type to build a [PwmCluster]
-pub struct PwmClusterBuilder<const NUM_PINS: usize> {
+pub struct PwmClusterBuilder<const NUM_PINS: usize, P> {
     pin_mask: u32,
     #[cfg(feature = "debug_pio")]
     side_set_pin: u8,
     channel_to_pin_map: [u8; NUM_PINS],
+    _phantom: PhantomData<P>,
 }
 
-impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
+impl<const NUM_PINS: usize, P> PwmClusterBuilder<NUM_PINS, P> {
     /// Construct a new [PwmClusterBuilder].
     pub fn new() -> Self {
         Self {
@@ -313,12 +315,14 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
             #[cfg(feature = "debug_pio")]
             side_set_pin: 0,
             channel_to_pin_map: [0; NUM_PINS],
+            _phantom: PhantomData,
         }
     }
 
     /// Set the pin_base for this cluster. NUM_PINS will be used to determine the pin count.
     pub fn pin_base<F>(mut self, base_pin: DynPin<F>) -> Self
     where
+        P: PIOExt<PinFunction = F>,
         F: Function,
     {
         let base_pin = base_pin.id().num;
@@ -333,6 +337,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     /// Set the pins directly from the `pins` parameter.
     pub fn pins<F>(mut self, pins: &[DynPin<F>; NUM_PINS]) -> Self
     where
+        P: PIOExt<PinFunction = F>,
         F: Function,
     {
         for (pin, pin_map) in pins.iter().zip(self.channel_to_pin_map.iter_mut()) {
@@ -348,13 +353,17 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     ///
     /// This method can be enabled with the "debug_pio" feature.
     #[cfg(feature = "debug_pio")]
-    pub fn side_pin(mut self, side_set_pin: &DynPin) -> Self {
+    pub fn side_pin<F>(mut self, side_set_pin: &DynPin<F>) -> Self
+    where
+        P: PIOExt<PinFunction = F>,
+        F: Function,
+    {
         self.side_set_pin = side_set_pin.id().num;
         self
     }
 
     /// Initialize [GlobalState]
-    pub(crate) fn prep_global_state<C1, C2, P, SM>(
+    pub(crate) fn prep_global_state<C1, C2, SM>(
         global_state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
     ) -> &'static mut GlobalState<C1, C2, P, SM>
     where
@@ -400,7 +409,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     /// # Safety
     /// Caller must ensure that global_state is not being read/mutated anywhere else.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn build<C1, C2, P, SM, F>(
+    pub unsafe fn build<C1, C2, SM, F>(
         self,
         servo_pins: [DynPin<F>; NUM_PINS],
         pio: &mut PIO<P>,
@@ -447,7 +456,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
             }
             #[cfg(feature = "debug_pio")]
             {
-                iter = iter_a.chain(Some(self.side_set_pin).into_iter());
+                iter = iter_a.chain(Some(self.side_set_pin));
             }
             sm.set_pindirs(iter.map(|id| (id, PinDir::Output)));
         }
@@ -506,7 +515,7 @@ impl<const NUM_PINS: usize> PwmClusterBuilder<NUM_PINS> {
     }
 }
 
-impl<const NUM_PINS: usize> Default for PwmClusterBuilder<NUM_PINS> {
+impl<const NUM_PINS: usize, P> Default for PwmClusterBuilder<NUM_PINS, P> {
     fn default() -> Self {
         Self::new()
     }
@@ -523,7 +532,7 @@ where
     pub const CHANNEL_PAIR_COUNT: usize = NUM_PINS / 2;
 
     /// Get a [PwmClusterBuilder].
-    pub fn builder() -> PwmClusterBuilder<NUM_PINS> {
+    pub fn builder() -> PwmClusterBuilder<NUM_PINS, P> {
         PwmClusterBuilder::new()
     }
 

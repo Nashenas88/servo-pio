@@ -15,7 +15,7 @@ use hal::gpio::{FunctionPio1, PullNone};
 use panic_probe as _;
 use pimoroni_servo2040::hal::clocks::SystemClock;
 use pimoroni_servo2040::hal::dma::{Channel, ChannelIndex, DMAExt, CH0, CH1};
-use pimoroni_servo2040::hal::gpio::{Error as GpioError, FunctionPio0};
+use pimoroni_servo2040::hal::gpio::FunctionPio0;
 use pimoroni_servo2040::hal::pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO, SM0};
 use pimoroni_servo2040::hal::{self, pac, Clock};
 use pimoroni_servo2040::pac::{interrupt, PIO0};
@@ -126,6 +126,7 @@ fn main() -> ! {
         clocks.peripheral_clock.freq(),
     );
 
+    // Build the servo cluster
     let mut servo_cluster = match build_servo_cluster(
         &mut pio0,
         sm0,
@@ -194,8 +195,12 @@ fn main() -> ! {
                 *velocity *= -1.0;
                 pulse = pulse.clamp(MIN_PULSE, MAX_PULSE);
             }
+            // Assign pulses to each servo, but passing `false` to prevent
+            // immediate usage of the pulse.
             servo_cluster.set_pulse(servo, pulse, false);
         }
+        // Load to trigger a simultaneous of the values to the servos. Phasing
+        // of the PWM signals will be used to prevent voltage spikes.
         servo_cluster.load();
         count_down.start(movement_delay);
         let _ = nb::block!(count_down.wait());
@@ -204,7 +209,6 @@ fn main() -> ! {
 
 #[derive(Format)]
 enum BuildError {
-    Gpio(GpioError),
     Build(ServoClusterBuilderError),
 }
 
@@ -240,13 +244,10 @@ where
         dma_channels,
         unsafe { &mut GLOBALS },
     )
-    .pins_and_calibration(servo_data)
-    .map_err(BuildError::Gpio)?;
+    .pins_and_calibration(servo_data);
     #[cfg(feature = "debug_pio")]
     {
-        builder = builder
-            .side_set_pin(side_set_pin)
-            .map_err(BuildError::Gpio)?;
+        builder = builder.side_set_pin(side_set_pin);
     }
     builder
         .pwm_frequency(50.0)

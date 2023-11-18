@@ -50,7 +50,7 @@ pub struct ServoClusterBuilder<
 > where
     C1: ChannelIndex + 'static,
     C2: ChannelIndex + 'static,
-    P: PIOExt + 'static,
+    P: PIOExt<PinFunction = F> + 'static,
     F: Function,
     SM: StateMachineIndex + 'static,
 {
@@ -66,7 +66,7 @@ pub struct ServoClusterBuilder<
     pins: Option<[DynPin<F>; NUM_SERVOS]>,
     /// The side set pin used for debugging the pio program.
     #[cfg(feature = "debug_pio")]
-    side_set_pin: Option<DynPin>,
+    side_set_pin: Option<DynPin<F>>,
     /// The pwm frequency the servos will share.
     pwm_frequency: Option<f32>,
     /// The calibration for each servo.
@@ -189,7 +189,7 @@ where
             self.auto_phase.unwrap_or(true),
         );
         let global_state = self.global_states.get_mut(&mut self.dma_channels, move || {
-            PwmClusterBuilder::<NUM_SERVOS>::prep_global_state(maybe_global_state)
+            PwmClusterBuilder::<NUM_SERVOS, P>::prep_global_state(maybe_global_state)
         });
         let mut pwms = {
             {
@@ -287,7 +287,6 @@ where
     where
         C1: ChannelIndex + 'static,
         C2: ChannelIndex + 'static,
-        P: PIOExt + 'static,
     {
         ServoClusterBuilder {
             pio,

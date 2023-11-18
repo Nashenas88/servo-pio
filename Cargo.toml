@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "servo-pio"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Paul Daniel Faria <Nashenas88@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nashenas88/servo-pio"

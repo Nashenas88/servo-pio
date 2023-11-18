@@ -4,44 +4,53 @@ Control servo motors using the RP2040's PIO peripheral.
 
 ## Example
 
-See [work_in_progress.rs] for a complete example. Below you'll find the details relevant for this crate.
-
-[work_in_progress.rs]: examples/work_in_progress.rs
-
 ```rust
+#[bsp::entry]
 fn main() -> ! {
-    // ...
-    let pins = pimoroni_servo2040::Pins::new(
+    // ... general setup ...
+
+    let pins = bsp::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
-    // Assign calibration data for each servo.
     let servo_pins: [_; NUM_SERVOS] = [
         ServoData {
-            pin: pins.servo3.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo3
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
                 .build(),
         },
         ServoData {
-            pin: pins.servo4.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo4
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
                 .build(),
         },
         ServoData {
-            pin: pins.servo5.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo5
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
                 .build(),
         },
         ServoData {
-            pin: pins.servo6.into_mode::<FunctionPio0>().into(),
+            pin: pins
+                .servo6
+                .reconfigure::<FunctionPio0, PullNone>()
+                .into_dyn_pin(),
             calibration: Calibration::builder(AngularCalibration::default())
                 .limit_lower()
                 .limit_upper()
@@ -56,7 +65,7 @@ fn main() -> ! {
     let dma = pac.DMA.split(&mut pac.RESETS);
 
     // Configure the Timer peripheral in count-down mode.
-    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
+    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let mut count_down = timer.count_down();
 
     // Build the servo cluster
@@ -66,7 +75,9 @@ fn main() -> ! {
         (dma.ch0, dma.ch1),
         servo_pins,
         #[cfg(feature = "debug_pio")]
-        pins.scl.into_mode::<FunctionPio0>().into(),
+        pins.scl
+            .reconfigure::<FunctionPio0, PullNone>()
+            .into_dyn_pin(),
         clocks.system_clock,
         unsafe { &mut STATE1 },
     ) {
@@ -133,15 +144,15 @@ fn build_servo_cluster<C1, C2, P, SM>(
     pio: &mut PIO<P>,
     sm: UninitStateMachine<(P, SM)>,
     dma_channels: (Channel<C1>, Channel<C2>),
-    servo_data: [ServoData<AngularCalibration>; NUM_SERVOS],
-    #[cfg(feature = "debug_pio")] side_set_pin: DynPin,
+    servo_data: [ServoData<AngularCalibration, FunctionPio0>; NUM_SERVOS],
+    #[cfg(feature = "debug_pio")] side_set_pin: Pin<DynPinId, FunctionPio0, PullNone>,
     system_clock: SystemClock,
     state: &'static mut Option<GlobalState<C1, C2, P, SM>>,
 ) -> Result<ServoCluster<NUM_SERVOS, P, SM, AngularCalibration>, BuildError>
 where
     C1: ChannelIndex,
     C2: ChannelIndex,
-    P: PIOExt + FunctionConfig,
+    P: PIOExt<PinFunction = FunctionPio0>,
     SM: StateMachineIndex,
 {
     #[allow(unused_mut)]
@@ -152,6 +163,7 @@ where
         C2,
         P,
         SM,
+        FunctionPio0,
         NUM_SERVOS,
         NUM_CHANNELS,
     > = ServoCluster::<NUM_SERVOS, P, SM, AngularCalibration>::builder(
@@ -160,13 +172,10 @@ where
         dma_channels,
         unsafe { &mut GLOBALS },
     )
-    .pins_and_calibration(servo_data)
-    .map_err(BuildError::Gpio)?;
+    .pins_and_calibration(servo_data);
     #[cfg(feature = "debug_pio")]
     {
-        builder = builder
-            .side_set_pin(side_set_pin)
-            .map_err(BuildError::Gpio)?;
+        builder = builder.side_set_pin(side_set_pin);
     }
     builder
         .pwm_frequency(50.0)
